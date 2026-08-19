@@ -22,7 +22,7 @@ def revision(character: str) -> str:
 def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | None = None) -> dict[str, object]:
     allocation = allocation or {"TQQQ": 4_500, "QQQM": 4_500, "BOXX": 800, "CASH": 200}
     decision: dict[str, object] = {
-        "decision_id": f"tqqq-core-only-p2-v5-{session.replace('-', '')}",
+        "decision_id": f"tqqq_core_only_p2_v5_{session.replace('-', '')}",
         "effective_session": session,
         "producer_revision": revision("a"),
         "allocation_bps": allocation,
@@ -31,7 +31,7 @@ def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | Non
     decision["decision_sha256"] = shadow_ledger.calculate_decision_sha256(decision)
     payload: dict[str, object] = {
         "schema": shadow_ledger.INPUT_SCHEMA,
-        "cycle_id": f"tqqq-core-only-p2-v5-shadow-{session.replace('-', '')}",
+        "cycle_id": f"tqqq_core_only_p2_v5_shadow_{session.replace('-', '')}",
         "produced_at": "2026-08-20T20:00:00Z",
         "candidate": {
             "candidate_id": shadow_ledger.CANDIDATE_ID,
@@ -145,7 +145,7 @@ def test_cli_creates_one_receipt_and_refuses_to_overwrite(tmp_path: Path):
     second = subprocess.run(command, capture_output=True, check=False, text=True)
 
     assert first.returncode == 0, first.stderr
-    assert first.stdout.startswith("SHADOW_RECEIPT_RECORDED cycle=tqqq-core-only-p2-v5-shadow-20260820")
+    assert first.stdout.startswith("SHADOW_RECEIPT_RECORDED cycle=tqqq_core_only_p2_v5_shadow_20260820")
     assert shadow_ledger.validate_shadow_ledger_receipt(json.loads(output_path.read_text(encoding="utf-8")))
     assert second.returncode == 1
     assert "File exists" in second.stderr

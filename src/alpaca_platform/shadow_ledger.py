@@ -21,7 +21,7 @@ from typing import Any
 
 INPUT_SCHEMA = "qsl.tqqq_shadow_cycle_input.v1"
 RECEIPT_SCHEMA = "qsl.tqqq_shadow_ledger_receipt.v1"
-CANDIDATE_ID = "tqqq-core-only-p2-v5"
+CANDIDATE_ID = "tqqq_core_only_p2_v5"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _IDENTITY = re.compile(r"^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$")
