@@ -108,6 +108,20 @@ def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | Non
     return payload
 
 
+def forward_observation(*, allocation: dict[str, int] | None = None) -> dict[str, object]:
+    cycle = cycle_input(allocation=allocation)
+    observation: dict[str, object] = {
+        "schema": shadow_ledger.FORWARD_OBSERVATION_SCHEMA,
+        "produced_at": "2026-08-20T19:30:00Z",
+        "candidate": cycle["candidate"],
+        "source_evidence": cycle["source_evidence"],
+        "forward_decision": cycle["forward_decision"],
+        "forward_observation_sha256": "",
+    }
+    observation["forward_observation_sha256"] = shadow_ledger.calculate_forward_observation_sha256(observation)
+    return observation
+
+
 def test_genesis_receipt_is_chain_linked_and_contains_only_virtual_weight_changes():
     receipt = shadow_ledger.build_shadow_ledger_receipt(cycle_input())
 
@@ -212,6 +226,43 @@ def test_policy_gate_receipt_must_match_shadow_risk_control_and_cycle_window():
         shadow_ledger.build_shadow_ledger_receipt(expired)
 
 
+def test_forward_observation_adapter_builds_the_only_accepted_p5_cycle_input():
+    expected = cycle_input()
+    built = shadow_ledger.build_tqqq_shadow_cycle_input(
+        forward_observation=forward_observation(),
+        policy_gate_receipt=expected["policy_gate_receipt"],
+        risk_control=expected["risk_control"],
+        deployment_bundle_sha256=expected["deployment_bundle_sha256"],
+        cycle_id=expected["cycle_id"],
+        produced_at=expected["produced_at"],
+    )
+
+    assert built == expected
+    assert shadow_ledger.build_shadow_ledger_receipt(built)["forward_decision"] == expected["forward_decision"]
+
+    corrupted = forward_observation()
+    corrupted["forward_decision"]["allocation_bps"]["TQQQ"] = 0
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="forward_observation|forward_decision"):
+        shadow_ledger.build_tqqq_shadow_cycle_input(
+            forward_observation=corrupted,
+            policy_gate_receipt=expected["policy_gate_receipt"],
+            risk_control=expected["risk_control"],
+            deployment_bundle_sha256=expected["deployment_bundle_sha256"],
+            cycle_id=expected["cycle_id"],
+            produced_at=expected["produced_at"],
+        )
+
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="must not precede"):
+        shadow_ledger.build_tqqq_shadow_cycle_input(
+            forward_observation=forward_observation(),
+            policy_gate_receipt=expected["policy_gate_receipt"],
+            risk_control=expected["risk_control"],
+            deployment_bundle_sha256=expected["deployment_bundle_sha256"],
+            cycle_id=expected["cycle_id"],
+            produced_at="2026-08-20T19:29:59Z",
+        )
+
+
 def test_cli_creates_one_receipt_and_refuses_to_overwrite(tmp_path: Path):
     input_path = tmp_path / "input.json"
     output_path = tmp_path / "receipt.json"
@@ -231,5 +282,43 @@ def test_cli_creates_one_receipt_and_refuses_to_overwrite(tmp_path: Path):
     assert first.returncode == 0, first.stderr
     assert first.stdout.startswith("SHADOW_RECEIPT_RECORDED cycle=tqqq_core_only_p2_v5_shadow_20260820")
     assert shadow_ledger.validate_shadow_ledger_receipt(json.loads(output_path.read_text(encoding="utf-8")))
+    assert second.returncode == 1
+    assert "File exists" in second.stderr
+
+
+def test_cycle_input_cli_creates_one_valid_input_and_refuses_to_overwrite(tmp_path: Path):
+    expected = cycle_input()
+    forward_path = tmp_path / "forward-observation.json"
+    policy_path = tmp_path / "policy-gate-receipt.json"
+    risk_path = tmp_path / "risk-control.json"
+    output_path = tmp_path / "cycle-input.json"
+    forward_path.write_text(json.dumps(forward_observation()), encoding="utf-8")
+    policy_path.write_text(json.dumps(expected["policy_gate_receipt"]), encoding="utf-8")
+    risk_path.write_text(json.dumps(expected["risk_control"]), encoding="utf-8")
+    command = [
+        sys.executable,
+        "-m",
+        "alpaca_platform.shadow_cycle_input",
+        "--forward-observation",
+        str(forward_path),
+        "--policy-gate-receipt",
+        str(policy_path),
+        "--risk-control",
+        str(risk_path),
+        "--deployment-bundle-sha256",
+        expected["deployment_bundle_sha256"],
+        "--cycle-id",
+        expected["cycle_id"],
+        "--produced-at",
+        expected["produced_at"],
+        "--output",
+        str(output_path),
+    ]
+    first = subprocess.run(command, capture_output=True, check=False, text=True)
+    second = subprocess.run(command, capture_output=True, check=False, text=True)
+
+    assert first.returncode == 0, first.stderr
+    assert first.stdout.startswith("SHADOW_CYCLE_INPUT_RECORDED cycle=tqqq_core_only_p2_v5_shadow_20260820")
+    assert shadow_ledger.validate_shadow_cycle_input(json.loads(output_path.read_text(encoding="utf-8"))) == expected
     assert second.returncode == 1
     assert "File exists" in second.stderr

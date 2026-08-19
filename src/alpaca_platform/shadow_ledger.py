@@ -23,6 +23,7 @@ from typing import Any
 INPUT_SCHEMA = "qsl.tqqq_shadow_cycle_input.v2"
 RECEIPT_SCHEMA = "qsl.tqqq_shadow_ledger_receipt.v2"
 POLICY_GATE_RECEIPT_SCHEMA = "qsl.gcp_kms_policy_gate_receipt.v1"
+FORWARD_OBSERVATION_SCHEMA = "qsl.tqqq-forward-observation.v1"
 CANDIDATE_ID = "tqqq_core_only_p2_v5"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -51,6 +52,14 @@ _INPUT_FIELDS = {
 _CANDIDATE_FIELDS = {"candidate_id", "config_sha256", "strategy_repository", "strategy_revision"}
 _EVIDENCE_FIELDS = {"p1_manifest_sha256", "p2_config_sha256", "p3_evidence_sha256", "producer_revision"}
 _DECISION_FIELDS = {"decision_id", "effective_session", "producer_revision", "allocation_bps", "decision_sha256"}
+_FORWARD_OBSERVATION_FIELDS = {
+    "schema",
+    "produced_at",
+    "candidate",
+    "source_evidence",
+    "forward_decision",
+    "forward_observation_sha256",
+}
 _RISK_CONTROL_FIELDS = {"stage", "execution_lane", "risk_policy_id", "risk_policy_version", "risk_policy_sha256"}
 _POLICY_GATE_RECEIPT_FIELDS = {
     "schema",
@@ -190,6 +199,13 @@ def calculate_policy_gate_receipt_sha256(value: Mapping[str, Any]) -> str:
     ).hexdigest()
 
 
+def calculate_forward_observation_sha256(value: Mapping[str, Any]) -> str:
+    """Return the digest of the bounded P1/P2/P3 forward-observation artifact."""
+    return hashlib.sha256(
+        _canonical_json(value, "forward_observation_sha256", "forward observation").encode("utf-8")
+    ).hexdigest()
+
+
 def _allocation(value: Any, path: str) -> dict[str, int]:
     allocation = _object(value, path)
     _exact_keys(allocation, set(_ALLOCATION_SYMBOLS), path)
@@ -277,6 +293,31 @@ def _risk_control(value: Any) -> dict[str, str]:
         "risk_policy_version": _identity(risk_control["risk_policy_version"], "risk_control.risk_policy_version"),
         "risk_policy_sha256": _digest(risk_control["risk_policy_sha256"], "risk_control.risk_policy_sha256"),
     }
+
+
+def _forward_observation(value: Any) -> tuple[dict[str, Any], datetime]:
+    """Validate the bounded upstream P1/P2/P3 artifact without importing UESP."""
+    _reject_unsafe_material(value, "forward_observation")
+    observation = _object(value, "forward_observation")
+    _exact_keys(observation, _FORWARD_OBSERVATION_FIELDS, "forward_observation")
+    if observation["schema"] != FORWARD_OBSERVATION_SCHEMA:
+        _fail(f"forward_observation.schema must be {FORWARD_OBSERVATION_SCHEMA}")
+    candidate = _candidate(observation["candidate"])
+    produced_at_text = observation["produced_at"]
+    produced_at = _timestamp(produced_at_text, "forward_observation.produced_at")
+    normalized: dict[str, Any] = {
+        "schema": FORWARD_OBSERVATION_SCHEMA,
+        "produced_at": produced_at_text,
+        "candidate": candidate,
+        "source_evidence": _source_evidence(observation["source_evidence"], candidate),
+        "forward_decision": _forward_decision(observation["forward_decision"], candidate),
+        "forward_observation_sha256": _digest(
+            observation["forward_observation_sha256"], "forward_observation.forward_observation_sha256"
+        ),
+    }
+    if normalized["forward_observation_sha256"] != calculate_forward_observation_sha256(normalized):
+        _fail("forward_observation.forward_observation_sha256 mismatch")
+    return normalized, produced_at
 
 
 def _repository(value: Any, path: str) -> str:
@@ -450,6 +491,42 @@ def validate_shadow_cycle_input(value: Any) -> dict[str, Any]:
     if normalized["input_sha256"] != calculate_input_sha256(normalized):
         _fail("shadow_input.input_sha256 mismatch")
     return normalized
+
+
+def build_tqqq_shadow_cycle_input(
+    *,
+    forward_observation: Any,
+    policy_gate_receipt: Any,
+    risk_control: Any,
+    deployment_bundle_sha256: str,
+    cycle_id: str,
+    produced_at: str,
+) -> dict[str, Any]:
+    """Adapt one verified TQQQ forward observation into a P5 v2 shadow input.
+
+    This is an adapter at the P1/P2/P3-to-P5 boundary.  It does not fetch
+    market data, issue a policy, or persist a receipt.  The returned object is
+    still subject to the same complete P5 validation as a file supplied to the
+    shadow ledger CLI.
+    """
+    observation, observation_produced_at = _forward_observation(forward_observation)
+    cycle_produced_at = _timestamp(produced_at, "shadow cycle produced_at")
+    if cycle_produced_at < observation_produced_at:
+        _fail("shadow cycle produced_at must not precede forward observation")
+    cycle: dict[str, Any] = {
+        "schema": INPUT_SCHEMA,
+        "cycle_id": _identity(cycle_id, "shadow cycle id"),
+        "produced_at": produced_at,
+        "deployment_bundle_sha256": _digest(deployment_bundle_sha256, "shadow cycle deployment bundle digest"),
+        "candidate": observation["candidate"],
+        "source_evidence": observation["source_evidence"],
+        "forward_decision": observation["forward_decision"],
+        "risk_control": risk_control,
+        "policy_gate_receipt": policy_gate_receipt,
+        "input_sha256": "",
+    }
+    cycle["input_sha256"] = calculate_input_sha256(cycle)
+    return validate_shadow_cycle_input(cycle)
 
 
 def validate_shadow_ledger_receipt(value: Any) -> dict[str, Any]:

@@ -19,6 +19,24 @@ P5 receipt 不是 P4/P6 权限。shadow input 会复核上游 policy-gate receip
 此前的 v1 仅为未启用的纯账本原型，未签发任何真实 receipt；v2 因此不保留可绕过
 policy-gate receipt 的兼容入口。
 
+UESP 只负责产生 `qsl.tqqq-forward-observation.v1`。本仓的适配器再把它与独立的
+policy-gate receipt、风险摘要和 deployment bundle 摘要组成 v2 shadow input；因此研究层
+不需要导入或理解券商、政策签名或运行环境。适配器本身也不会排程或写入账本：
+
+```bash
+python -m alpaca_platform.shadow_cycle_input \
+  --forward-observation observation.json \
+  --policy-gate-receipt policy-gate-receipt.json \
+  --risk-control risk-control.json \
+  --deployment-bundle-sha256 <sha256> \
+  --cycle-id <immutable-id> \
+  --produced-at <rfc3339-utc> \
+  --output cycle-input.json
+```
+
+输出同样采用 create-only 写入。后续 `shadow_ledger` 仍会重新验证整个 v2 input，而不是信任
+该适配器的成功输出。
+
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
