@@ -19,6 +19,53 @@ def revision(character: str) -> str:
     return character * 40
 
 
+def policy_gate_receipt() -> dict[str, object]:
+    receipt: dict[str, object] = {
+        "schema": shadow_ledger.POLICY_GATE_RECEIPT_SCHEMA,
+        "verified_at": "2026-08-20T19:00:00Z",
+        "deployment_bundle": {
+            "schema": "qsl.deployment_bundle.v1",
+            "bundle_id": "bundle.tqqq-core-only.shadow.20260820",
+            "bundle_sha256": sha("1"),
+        },
+        "policy": {
+            "policy_id": "tqqq-core-only-shadow-policy",
+            "policy_version": "v1",
+            "policy_sha256": sha("2"),
+            "stage": "SHADOW",
+            "effective_at": "2026-08-20T18:00:00Z",
+            "expires_at": "2026-08-21T18:00:00Z",
+        },
+        "activation": {
+            "activation_id": "tqqq-core-only-shadow-activation",
+            "activation_sha256": sha("3"),
+            "effective_at": "2026-08-20T19:00:00Z",
+            "expires_at": "2026-08-21T17:00:00Z",
+        },
+        "target": {
+            "platform": "alpaca",
+            "repository": "QuantStrategyLab/AlpacaPlatform",
+            "revision": revision("4"),
+            "environment": "alpaca-shadow",
+            "target_sha256": sha("5"),
+        },
+        "risk_control": {
+            "risk_policy_id": "tqqq-core-only-shadow",
+            "risk_policy_version": "v1",
+            "risk_policy_sha256": sha("f"),
+        },
+        "trusted_policy_root": {
+            "root_id": "qsl-kms-root-2026",
+            "trusted_policy_root_sha256": sha("6"),
+            "expires_at": "2026-08-22T00:00:00Z",
+        },
+        "signature_sha256": sha("7"),
+        "receipt_sha256": "",
+    }
+    receipt["receipt_sha256"] = shadow_ledger.calculate_policy_gate_receipt_sha256(receipt)
+    return receipt
+
+
 def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | None = None) -> dict[str, object]:
     allocation = allocation or {"TQQQ": 4_500, "QQQM": 4_500, "BOXX": 800, "CASH": 200}
     decision: dict[str, object] = {
@@ -33,6 +80,7 @@ def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | Non
         "schema": shadow_ledger.INPUT_SCHEMA,
         "cycle_id": f"tqqq_core_only_p2_v5_shadow_{session.replace('-', '')}",
         "produced_at": "2026-08-20T20:00:00Z",
+        "deployment_bundle_sha256": sha("1"),
         "candidate": {
             "candidate_id": shadow_ledger.CANDIDATE_ID,
             "config_sha256": sha("b"),
@@ -53,6 +101,7 @@ def cycle_input(*, session: str = "2026-08-20", allocation: dict[str, int] | Non
             "risk_policy_version": "v1",
             "risk_policy_sha256": sha("f"),
         },
+        "policy_gate_receipt": policy_gate_receipt(),
         "input_sha256": "",
     }
     payload["input_sha256"] = shadow_ledger.calculate_input_sha256(payload)
@@ -126,6 +175,41 @@ def test_prior_receipt_requires_same_candidate_and_a_later_session():
     mismatched_candidate["receipt_sha256"] = shadow_ledger.calculate_receipt_sha256(mismatched_candidate)
     with pytest.raises(shadow_ledger.ShadowLedgerError, match="candidate"):
         shadow_ledger.build_shadow_ledger_receipt(cycle_input(session="2026-08-21"), prior_receipt=mismatched_candidate)
+
+
+def test_policy_gate_receipt_must_match_shadow_risk_control_and_cycle_window():
+    mismatched_bundle = cycle_input()
+    mismatched_bundle["deployment_bundle_sha256"] = sha("0")
+    mismatched_bundle["input_sha256"] = shadow_ledger.calculate_input_sha256(mismatched_bundle)
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="deployment bundle does not match"):
+        shadow_ledger.build_shadow_ledger_receipt(mismatched_bundle)
+
+    mismatched_risk = cycle_input()
+    mismatched_risk["policy_gate_receipt"]["risk_control"]["risk_policy_sha256"] = sha("0")
+    mismatched_risk["policy_gate_receipt"]["receipt_sha256"] = shadow_ledger.calculate_policy_gate_receipt_sha256(
+        mismatched_risk["policy_gate_receipt"]
+    )
+    mismatched_risk["input_sha256"] = shadow_ledger.calculate_input_sha256(mismatched_risk)
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="risk control does not match"):
+        shadow_ledger.build_shadow_ledger_receipt(mismatched_risk)
+
+    wrong_gateway = cycle_input()
+    wrong_gateway["policy_gate_receipt"]["target"]["platform"] = "interactive-brokers"
+    wrong_gateway["policy_gate_receipt"]["receipt_sha256"] = shadow_ledger.calculate_policy_gate_receipt_sha256(
+        wrong_gateway["policy_gate_receipt"]
+    )
+    wrong_gateway["input_sha256"] = shadow_ledger.calculate_input_sha256(wrong_gateway)
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="must bind this Alpaca"):
+        shadow_ledger.build_shadow_ledger_receipt(wrong_gateway)
+
+    expired = cycle_input()
+    expired["policy_gate_receipt"]["activation"]["expires_at"] = "2026-08-20T20:00:00Z"
+    expired["policy_gate_receipt"]["receipt_sha256"] = shadow_ledger.calculate_policy_gate_receipt_sha256(
+        expired["policy_gate_receipt"]
+    )
+    expired["input_sha256"] = shadow_ledger.calculate_input_sha256(expired)
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="expired"):
+        shadow_ledger.build_shadow_ledger_receipt(expired)
 
 
 def test_cli_creates_one_receipt_and_refuses_to_overwrite(tmp_path: Path):

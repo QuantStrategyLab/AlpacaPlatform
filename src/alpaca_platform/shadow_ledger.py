@@ -1,9 +1,10 @@
 """Pure, no-broker P5 shadow-ledger receipt construction for frozen TQQQ input.
 
 There is intentionally no Alpaca client in this module. The caller supplies a
-validated forward decision and writes the resulting receipt to its own
-create-only storage. The module neither reads credentials nor makes network
-requests nor produces broker order payloads.
+validated forward decision and a bounded receipt from the independently
+protected policy gate, then writes the resulting receipt to its own create-only
+storage. The module neither reads credentials nor makes network requests nor
+produces broker order payloads.
 """
 
 from __future__ import annotations
@@ -19,8 +20,9 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
-INPUT_SCHEMA = "qsl.tqqq_shadow_cycle_input.v1"
-RECEIPT_SCHEMA = "qsl.tqqq_shadow_ledger_receipt.v1"
+INPUT_SCHEMA = "qsl.tqqq_shadow_cycle_input.v2"
+RECEIPT_SCHEMA = "qsl.tqqq_shadow_ledger_receipt.v2"
+POLICY_GATE_RECEIPT_SCHEMA = "qsl.gcp_kms_policy_gate_receipt.v1"
 CANDIDATE_ID = "tqqq_core_only_p2_v5"
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -38,18 +40,46 @@ _INPUT_FIELDS = {
     "schema",
     "cycle_id",
     "produced_at",
+    "deployment_bundle_sha256",
     "candidate",
     "source_evidence",
     "forward_decision",
     "risk_control",
+    "policy_gate_receipt",
     "input_sha256",
 }
 _CANDIDATE_FIELDS = {"candidate_id", "config_sha256", "strategy_repository", "strategy_revision"}
 _EVIDENCE_FIELDS = {"p1_manifest_sha256", "p2_config_sha256", "p3_evidence_sha256", "producer_revision"}
 _DECISION_FIELDS = {"decision_id", "effective_session", "producer_revision", "allocation_bps", "decision_sha256"}
 _RISK_CONTROL_FIELDS = {"stage", "execution_lane", "risk_policy_id", "risk_policy_version", "risk_policy_sha256"}
+_POLICY_GATE_RECEIPT_FIELDS = {
+    "schema",
+    "verified_at",
+    "deployment_bundle",
+    "policy",
+    "activation",
+    "target",
+    "risk_control",
+    "trusted_policy_root",
+    "signature_sha256",
+    "receipt_sha256",
+}
+_POLICY_GATE_BUNDLE_FIELDS = {"schema", "bundle_id", "bundle_sha256"}
+_POLICY_GATE_POLICY_FIELDS = {
+    "policy_id",
+    "policy_version",
+    "policy_sha256",
+    "stage",
+    "effective_at",
+    "expires_at",
+}
+_POLICY_GATE_ACTIVATION_FIELDS = {"activation_id", "activation_sha256", "effective_at", "expires_at"}
+_POLICY_GATE_TARGET_FIELDS = {"platform", "repository", "revision", "environment", "target_sha256"}
+_POLICY_GATE_RISK_FIELDS = {"risk_policy_id", "risk_policy_version", "risk_policy_sha256"}
+_POLICY_GATE_ROOT_FIELDS = {"root_id", "trusted_policy_root_sha256", "expires_at"}
 _RECEIPT_FIELDS = {
-    "schema", "cycle_id", "produced_at", "candidate", "source_evidence", "forward_decision", "risk_control",
+    "schema", "cycle_id", "produced_at", "deployment_bundle_sha256", "candidate", "source_evidence", "forward_decision", "risk_control",
+    "policy_gate_receipt",
     "ledger_parent_sha256", "shadow_adjustments_bps", "receipt_sha256",
 }
 
@@ -153,6 +183,13 @@ def calculate_receipt_sha256(value: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(value, "receipt_sha256", "shadow receipt").encode("utf-8")).hexdigest()
 
 
+def calculate_policy_gate_receipt_sha256(value: Mapping[str, Any]) -> str:
+    """Return the digest of the non-secret receipt emitted by the P0 KMS gate."""
+    return hashlib.sha256(
+        _canonical_json(value, "receipt_sha256", "policy-gate receipt").encode("utf-8")
+    ).hexdigest()
+
+
 def _allocation(value: Any, path: str) -> dict[str, int]:
     allocation = _object(value, path)
     _exact_keys(allocation, set(_ALLOCATION_SYMBOLS), path)
@@ -242,25 +279,174 @@ def _risk_control(value: Any) -> dict[str, str]:
     }
 
 
+def _repository(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", value):
+        _fail(f"{path} must be an owner/repository identity")
+    return value
+
+
+def _policy_gate_receipt(
+    value: Any,
+    *,
+    observed_at: datetime,
+    expected_bundle_sha256: str,
+    risk_control: Mapping[str, str],
+) -> dict[str, Any]:
+    """Validate a bounded upstream policy-gate receipt for the P5 shadow lane.
+
+    The receipt must arrive from the independently protected KMS gate. This
+    consumer checks its closed structure, digest, control window, and exact
+    risk-policy binding; it neither verifies a KMS signature nor issues a
+    policy itself.
+    """
+    _reject_unsafe_material(value, "policy_gate_receipt")
+    receipt = _object(value, "policy_gate_receipt")
+    _exact_keys(receipt, _POLICY_GATE_RECEIPT_FIELDS, "policy_gate_receipt")
+    if receipt["schema"] != POLICY_GATE_RECEIPT_SCHEMA:
+        _fail(f"policy_gate_receipt.schema must be {POLICY_GATE_RECEIPT_SCHEMA}")
+    verified_at_text = receipt["verified_at"]
+    verified_at = _timestamp(verified_at_text, "policy_gate_receipt.verified_at")
+
+    bundle = _object(receipt["deployment_bundle"], "policy_gate_receipt.deployment_bundle")
+    _exact_keys(bundle, _POLICY_GATE_BUNDLE_FIELDS, "policy_gate_receipt.deployment_bundle")
+    if bundle["schema"] != "qsl.deployment_bundle.v1":
+        _fail("policy_gate_receipt.deployment_bundle.schema must be qsl.deployment_bundle.v1")
+    normalized_bundle = {
+        "schema": "qsl.deployment_bundle.v1",
+        "bundle_id": _identity(bundle["bundle_id"], "policy_gate_receipt.deployment_bundle.bundle_id"),
+        "bundle_sha256": _digest(bundle["bundle_sha256"], "policy_gate_receipt.deployment_bundle.bundle_sha256"),
+    }
+    if normalized_bundle["bundle_sha256"] != expected_bundle_sha256:
+        _fail("policy_gate_receipt deployment bundle does not match shadow input")
+
+    policy = _object(receipt["policy"], "policy_gate_receipt.policy")
+    _exact_keys(policy, _POLICY_GATE_POLICY_FIELDS, "policy_gate_receipt.policy")
+    if policy["stage"] != "SHADOW":
+        _fail("policy_gate_receipt.policy.stage must be SHADOW")
+    policy_effective_text = policy["effective_at"]
+    policy_expires_text = policy["expires_at"]
+    policy_effective = _timestamp(policy_effective_text, "policy_gate_receipt.policy.effective_at")
+    policy_expires = _timestamp(policy_expires_text, "policy_gate_receipt.policy.expires_at")
+    if policy_expires <= policy_effective:
+        _fail("policy_gate_receipt policy window is invalid")
+    normalized_policy = {
+        "policy_id": _identity(policy["policy_id"], "policy_gate_receipt.policy.policy_id"),
+        "policy_version": _identity(policy["policy_version"], "policy_gate_receipt.policy.policy_version"),
+        "policy_sha256": _digest(policy["policy_sha256"], "policy_gate_receipt.policy.policy_sha256"),
+        "stage": "SHADOW",
+        "effective_at": policy_effective_text,
+        "expires_at": policy_expires_text,
+    }
+
+    activation = _object(receipt["activation"], "policy_gate_receipt.activation")
+    _exact_keys(activation, _POLICY_GATE_ACTIVATION_FIELDS, "policy_gate_receipt.activation")
+    activation_effective_text = activation["effective_at"]
+    activation_expires_text = activation["expires_at"]
+    activation_effective = _timestamp(activation_effective_text, "policy_gate_receipt.activation.effective_at")
+    activation_expires = _timestamp(activation_expires_text, "policy_gate_receipt.activation.expires_at")
+    if activation_expires <= activation_effective:
+        _fail("policy_gate_receipt activation window is invalid")
+    if activation_effective < policy_effective or activation_expires > policy_expires:
+        _fail("policy_gate_receipt activation window is not contained in policy window")
+    normalized_activation = {
+        "activation_id": _identity(activation["activation_id"], "policy_gate_receipt.activation.activation_id"),
+        "activation_sha256": _digest(activation["activation_sha256"], "policy_gate_receipt.activation.activation_sha256"),
+        "effective_at": activation_effective_text,
+        "expires_at": activation_expires_text,
+    }
+
+    target = _object(receipt["target"], "policy_gate_receipt.target")
+    _exact_keys(target, _POLICY_GATE_TARGET_FIELDS, "policy_gate_receipt.target")
+    normalized_target = {
+        "platform": _identity(target["platform"], "policy_gate_receipt.target.platform"),
+        "repository": _repository(target["repository"], "policy_gate_receipt.target.repository"),
+        "revision": _revision(target["revision"], "policy_gate_receipt.target.revision"),
+        "environment": _identity(target["environment"], "policy_gate_receipt.target.environment"),
+        "target_sha256": _digest(target["target_sha256"], "policy_gate_receipt.target.target_sha256"),
+    }
+    if normalized_target["platform"] != "alpaca" or normalized_target["repository"] != "QuantStrategyLab/AlpacaPlatform":
+        _fail("policy_gate_receipt target must bind this Alpaca P5 gateway")
+    if normalized_target["environment"] != "alpaca-shadow":
+        _fail("policy_gate_receipt target.environment must be alpaca-shadow")
+
+    receipt_risk = _object(receipt["risk_control"], "policy_gate_receipt.risk_control")
+    _exact_keys(receipt_risk, _POLICY_GATE_RISK_FIELDS, "policy_gate_receipt.risk_control")
+    normalized_risk = {
+        "risk_policy_id": _identity(receipt_risk["risk_policy_id"], "policy_gate_receipt.risk_control.risk_policy_id"),
+        "risk_policy_version": _identity(
+            receipt_risk["risk_policy_version"], "policy_gate_receipt.risk_control.risk_policy_version"
+        ),
+        "risk_policy_sha256": _digest(
+            receipt_risk["risk_policy_sha256"], "policy_gate_receipt.risk_control.risk_policy_sha256"
+        ),
+    }
+    if normalized_risk != {
+        "risk_policy_id": risk_control["risk_policy_id"],
+        "risk_policy_version": risk_control["risk_policy_version"],
+        "risk_policy_sha256": risk_control["risk_policy_sha256"],
+    }:
+        _fail("policy_gate_receipt risk control does not match shadow input")
+
+    trusted_root = _object(receipt["trusted_policy_root"], "policy_gate_receipt.trusted_policy_root")
+    _exact_keys(trusted_root, _POLICY_GATE_ROOT_FIELDS, "policy_gate_receipt.trusted_policy_root")
+    root_expires_text = trusted_root["expires_at"]
+    root_expires = _timestamp(root_expires_text, "policy_gate_receipt.trusted_policy_root.expires_at")
+    normalized_root = {
+        "root_id": _identity(trusted_root["root_id"], "policy_gate_receipt.trusted_policy_root.root_id"),
+        "trusted_policy_root_sha256": _digest(
+            trusted_root["trusted_policy_root_sha256"], "policy_gate_receipt.trusted_policy_root.trusted_policy_root_sha256"
+        ),
+        "expires_at": root_expires_text,
+    }
+    normalized: dict[str, Any] = {
+        "schema": POLICY_GATE_RECEIPT_SCHEMA,
+        "verified_at": verified_at_text,
+        "deployment_bundle": normalized_bundle,
+        "policy": normalized_policy,
+        "activation": normalized_activation,
+        "target": normalized_target,
+        "risk_control": normalized_risk,
+        "trusted_policy_root": normalized_root,
+        "signature_sha256": _digest(receipt["signature_sha256"], "policy_gate_receipt.signature_sha256"),
+        "receipt_sha256": _digest(receipt["receipt_sha256"], "policy_gate_receipt.receipt_sha256"),
+    }
+    if normalized["receipt_sha256"] != calculate_policy_gate_receipt_sha256(normalized):
+        _fail("policy_gate_receipt.receipt_sha256 mismatch")
+    if observed_at < verified_at or observed_at < activation_effective:
+        _fail("policy_gate_receipt is not yet effective for this shadow cycle")
+    if observed_at >= min(policy_expires, activation_expires, root_expires):
+        _fail("policy_gate_receipt is expired for this shadow cycle")
+    return normalized
+
+
 def validate_shadow_cycle_input(value: Any) -> dict[str, Any]:
-    """Validate one bounded P5 input; this does not verify or issue its policy."""
+    """Validate one bounded P5 input; this does not verify or issue a KMS policy."""
     _reject_unsafe_material(value, "shadow_input")
     root = _object(value, "shadow_input")
     _exact_keys(root, _INPUT_FIELDS, "shadow_input")
     if root["schema"] != INPUT_SCHEMA:
         _fail(f"shadow_input.schema must be {INPUT_SCHEMA}")
     candidate = _candidate(root["candidate"])
+    produced_at = _timestamp(root["produced_at"], "shadow_input.produced_at")
+    deployment_bundle_sha256 = _digest(root["deployment_bundle_sha256"], "shadow_input.deployment_bundle_sha256")
+    risk_control = _risk_control(root["risk_control"])
     normalized = {
         "schema": INPUT_SCHEMA,
         "cycle_id": _identity(root["cycle_id"], "shadow_input.cycle_id"),
         "produced_at": root["produced_at"],
+        "deployment_bundle_sha256": deployment_bundle_sha256,
         "candidate": candidate,
         "source_evidence": _source_evidence(root["source_evidence"], candidate),
         "forward_decision": _forward_decision(root["forward_decision"], candidate),
-        "risk_control": _risk_control(root["risk_control"]),
+        "risk_control": risk_control,
+        "policy_gate_receipt": _policy_gate_receipt(
+            root["policy_gate_receipt"],
+            observed_at=produced_at,
+            expected_bundle_sha256=deployment_bundle_sha256,
+            risk_control=risk_control,
+        ),
         "input_sha256": _digest(root["input_sha256"], "shadow_input.input_sha256"),
     }
-    _timestamp(normalized["produced_at"], "shadow_input.produced_at")
     if normalized["input_sha256"] != calculate_input_sha256(normalized):
         _fail("shadow_input.input_sha256 mismatch")
     return normalized
@@ -274,21 +460,30 @@ def validate_shadow_ledger_receipt(value: Any) -> dict[str, Any]:
     if root["schema"] != RECEIPT_SCHEMA:
         _fail(f"shadow_receipt.schema must be {RECEIPT_SCHEMA}")
     candidate = _candidate(root["candidate"])
+    produced_at = _timestamp(root["produced_at"], "shadow_receipt.produced_at")
+    deployment_bundle_sha256 = _digest(root["deployment_bundle_sha256"], "shadow_receipt.deployment_bundle_sha256")
+    risk_control = _risk_control(root["risk_control"])
     normalized = {
         "schema": RECEIPT_SCHEMA,
         "cycle_id": _identity(root["cycle_id"], "shadow_receipt.cycle_id"),
         "produced_at": root["produced_at"],
+        "deployment_bundle_sha256": deployment_bundle_sha256,
         "candidate": candidate,
         "source_evidence": _source_evidence(root["source_evidence"], candidate),
         "forward_decision": _forward_decision(root["forward_decision"], candidate),
-        "risk_control": _risk_control(root["risk_control"]),
+        "risk_control": risk_control,
+        "policy_gate_receipt": _policy_gate_receipt(
+            root["policy_gate_receipt"],
+            observed_at=produced_at,
+            expected_bundle_sha256=deployment_bundle_sha256,
+            risk_control=risk_control,
+        ),
         "ledger_parent_sha256": _digest(root["ledger_parent_sha256"], "shadow_receipt.ledger_parent_sha256"),
         "shadow_adjustments_bps": _adjustment_bps(
             root["shadow_adjustments_bps"], "shadow_receipt.shadow_adjustments_bps"
         ),
         "receipt_sha256": _digest(root["receipt_sha256"], "shadow_receipt.receipt_sha256"),
     }
-    _timestamp(normalized["produced_at"], "shadow_receipt.produced_at")
     if normalized["receipt_sha256"] != calculate_receipt_sha256(normalized):
         _fail("shadow_receipt.receipt_sha256 mismatch")
     return normalized
@@ -320,10 +515,12 @@ def build_shadow_ledger_receipt(cycle_input: Any, *, prior_receipt: Any | None =
         "schema": RECEIPT_SCHEMA,
         "cycle_id": cycle["cycle_id"],
         "produced_at": cycle["produced_at"],
+        "deployment_bundle_sha256": cycle["deployment_bundle_sha256"],
         "candidate": cycle["candidate"],
         "source_evidence": cycle["source_evidence"],
         "forward_decision": cycle["forward_decision"],
         "risk_control": cycle["risk_control"],
+        "policy_gate_receipt": cycle["policy_gate_receipt"],
         "ledger_parent_sha256": parent_sha256,
         "shadow_adjustments_bps": _adjustments(cycle["forward_decision"]["allocation_bps"], previous_allocation),
         "receipt_sha256": "",
