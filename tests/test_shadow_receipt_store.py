@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 
 import pytest
 
-from alpaca_platform import shadow_ledger, shadow_receipt_store, shadow_scheduler
+from alpaca_platform import shadow_ledger, shadow_receipt_store, shadow_risk_gate_decision, shadow_scheduler
 
 
 def sha(character: str) -> str:
@@ -111,14 +112,75 @@ def ready_outcome(*, allocation: dict[str, int] | None = None) -> shadow_schedul
     )
 
 
+def risk_gate_decision_envelope(
+    outcome: shadow_scheduler.ShadowCycleOutcome,
+    *,
+    decision: str = "ALLOW_NEW_RISK",
+    source_risk_policy_sha256: str | None = None,
+) -> dict[str, object]:
+    assert outcome.receipt is not None
+    risk_decision: dict[str, object] = {
+        "schema": shadow_risk_gate_decision.DETERMINISTIC_RISK_GATE_DECISION_SCHEMA,
+        "evaluation_id": outcome.result["cycle_id"],
+        "observed_at": outcome.result["computed_at"],
+        "policy": {
+            "risk_policy_id": "tqqq-core-only-shadow-risk-gate",
+            "risk_policy_version": "v1",
+            "risk_policy_sha256": sha("9"),
+        },
+        "decision": decision,
+        "reason_codes": [] if decision == "ALLOW_NEW_RISK" else ["CIRCUIT_BREAKER_OPEN"],
+        "next_circuit_breaker_state": "CLOSED" if decision == "ALLOW_NEW_RISK" else "OPEN",
+        "manual_reset_required": True,
+        "projected": {
+            "gross_notional_cents": 50_000,
+            "symbol_gross_notional_cents": 50_000,
+            "strategy_gross_notional_cents": 50_000,
+            "leverage_bps": 5_000,
+            "decisions_in_session": 1,
+        },
+        "decision_sha256": "",
+    }
+    canonical_decision = dict(risk_decision)
+    canonical_decision.pop("decision_sha256")
+    risk_decision["decision_sha256"] = hashlib.sha256(
+        json.dumps(canonical_decision, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    source_risk_control = {
+        "schema": shadow_risk_gate_decision.FORWARD_OBSERVATION_RISK_CONTROL_SCHEMA,
+        "risk_policy_id": outcome.receipt["risk_control"]["risk_policy_id"],
+        "risk_policy_version": outcome.receipt["risk_control"]["risk_policy_version"],
+        "risk_policy_sha256": source_risk_policy_sha256
+        or outcome.receipt["risk_control"]["risk_policy_sha256"],
+    }
+    envelope: dict[str, object] = {
+        "schema": shadow_risk_gate_decision.P5_RISK_GATE_DECISION_ENVELOPE_SCHEMA,
+        "cycle_id": outcome.result["cycle_id"],
+        "computed_at": outcome.result["computed_at"],
+        "source_risk_control": source_risk_control,
+        "risk_gate_decision": risk_decision,
+        "envelope_sha256": "",
+    }
+    envelope["envelope_sha256"] = shadow_risk_gate_decision.calculate_p5_risk_gate_decision_envelope_sha256(
+        envelope
+    )
+    return envelope
+
+
 def test_ready_controller_outcome_becomes_a_closed_sanitized_admission():
     outcome = ready_outcome()
 
-    admission = shadow_receipt_store.build_shadow_receipt_admission(outcome)
+    admission = shadow_receipt_store.build_shadow_receipt_admission(
+        outcome,
+        risk_gate_decision=risk_gate_decision_envelope(outcome),
+    )
 
     assert shadow_receipt_store.validate_shadow_receipt_admission(admission) == admission
     assert admission["scheduler_result"] == outcome.result
     assert admission["shadow_receipt"] == outcome.receipt
+    assert admission["risk_gate_decision"]["decision_sha256"] == risk_gate_decision_envelope(outcome)[
+        "risk_gate_decision"
+    ]["decision_sha256"]
     rendered = json.dumps(admission, sort_keys=True).lower()
     for forbidden in ("broker", "order", "account", "notional", "price", "credential"):
         assert forbidden not in rendered
@@ -132,9 +194,14 @@ def test_ready_controller_outcome_becomes_a_closed_sanitized_admission():
 def test_in_memory_store_is_create_only_and_reconciles_identical_admission():
     store = shadow_receipt_store.InMemoryShadowReceiptStore()
     outcome = ready_outcome()
+    risk_gate_decision = risk_gate_decision_envelope(outcome)
 
-    first = shadow_receipt_store.persist_shadow_cycle_outcome(outcome, store)
-    second = shadow_receipt_store.persist_shadow_cycle_outcome(outcome, store)
+    first = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome, store, risk_gate_decision=risk_gate_decision
+    )
+    second = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome, store, risk_gate_decision=risk_gate_decision
+    )
 
     assert first["status"] == "RECORDED"
     assert second["status"] == "RECONCILED"
@@ -162,19 +229,86 @@ def test_missing_scheduler_prerequisite_stays_parked_and_never_calls_store():
     assert result["reason_code"] == "forward_observation_missing"
     assert store.read(outcome.result["cycle_id"]) is None
     with pytest.raises(shadow_receipt_store.ShadowReceiptStoreError, match="RECEIPT_READY"):
-        shadow_receipt_store.build_shadow_receipt_admission(outcome)
+        shadow_receipt_store.build_shadow_receipt_admission(outcome, risk_gate_decision={})
 
 
 def test_conflicting_cycle_is_parked_without_overwriting_existing_admission():
     store = shadow_receipt_store.InMemoryShadowReceiptStore()
     first_outcome = ready_outcome()
-    first_result = shadow_receipt_store.persist_shadow_cycle_outcome(first_outcome, store)
+    first_result = shadow_receipt_store.persist_shadow_cycle_outcome(
+        first_outcome,
+        store,
+        risk_gate_decision=risk_gate_decision_envelope(first_outcome),
+    )
     conflicting_outcome = ready_outcome(allocation={"TQQQ": 0, "QQQM": 9_000, "BOXX": 800, "CASH": 200})
 
-    result = shadow_receipt_store.persist_shadow_cycle_outcome(conflicting_outcome, store)
+    result = shadow_receipt_store.persist_shadow_cycle_outcome(
+        conflicting_outcome,
+        store,
+        risk_gate_decision=risk_gate_decision_envelope(conflicting_outcome),
+    )
 
     assert result["status"] == "PARKED"
     assert result["reason_code"] == "receipt_conflict"
     stored = store.read(first_outcome.result["cycle_id"])
     assert stored is not None
     assert stored["admission_sha256"] == first_result["admission_sha256"]
+
+
+@pytest.mark.parametrize(
+    ("risk_gate_decision", "reason_code"),
+    [
+        (None, "risk_gate_decision_missing"),
+        ({}, "risk_gate_decision_invalid"),
+    ],
+)
+def test_missing_or_invalid_risk_decision_is_parked_without_touching_store(
+    risk_gate_decision: object | None,
+    reason_code: str,
+):
+    store = shadow_receipt_store.InMemoryShadowReceiptStore()
+    outcome = ready_outcome()
+
+    result = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome,
+        store,
+        risk_gate_decision=risk_gate_decision,
+    )
+
+    assert result["status"] == "PARKED"
+    assert result["reason_code"] == reason_code
+    assert store.read(outcome.result["cycle_id"]) is None
+
+
+def test_prohibited_or_mismatched_risk_decision_is_parked_without_touching_store():
+    store = shadow_receipt_store.InMemoryShadowReceiptStore()
+    outcome = ready_outcome()
+    invalid_digest = risk_gate_decision_envelope(outcome)
+    invalid_digest["risk_gate_decision"]["decision_sha256"] = sha("0")
+    invalid_digest["envelope_sha256"] = shadow_risk_gate_decision.calculate_p5_risk_gate_decision_envelope_sha256(
+        invalid_digest
+    )
+
+    invalid = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome,
+        store,
+        risk_gate_decision=invalid_digest,
+    )
+    prohibited = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome,
+        store,
+        risk_gate_decision=risk_gate_decision_envelope(outcome, decision="NEW_RISK_PROHIBITED"),
+    )
+    mismatched = shadow_receipt_store.persist_shadow_cycle_outcome(
+        outcome,
+        store,
+        risk_gate_decision=risk_gate_decision_envelope(outcome, source_risk_policy_sha256=sha("0")),
+    )
+
+    assert invalid["status"] == "PARKED"
+    assert invalid["reason_code"] == "risk_gate_decision_invalid"
+    assert prohibited["status"] == "PARKED"
+    assert prohibited["reason_code"] == "risk_gate_decision_prohibited"
+    assert mismatched["status"] == "PARKED"
+    assert mismatched["reason_code"] == "risk_gate_decision_mismatch"
+    assert store.read(outcome.result["cycle_id"]) is None
