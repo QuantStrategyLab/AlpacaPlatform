@@ -176,6 +176,15 @@ def test_later_cycle_links_to_a_valid_prior_receipt():
     request["forward_observation"]["forward_observation_sha256"] = shadow_ledger.calculate_forward_observation_sha256(
         request["forward_observation"]
     )
+    request["policy_gate_receipt"] = copy.deepcopy(request["policy_gate_receipt"])
+    request["policy_gate_receipt"]["policy"]["effective_at"] = "2026-08-21T18:00:00Z"
+    request["policy_gate_receipt"]["policy"]["expires_at"] = "2026-08-22T18:00:00Z"
+    request["policy_gate_receipt"]["activation"]["effective_at"] = "2026-08-21T19:00:00Z"
+    request["policy_gate_receipt"]["activation"]["expires_at"] = "2026-08-22T17:00:00Z"
+    request["policy_gate_receipt"]["trusted_policy_root"]["expires_at"] = "2026-08-23T00:00:00Z"
+    request["policy_gate_receipt"]["receipt_sha256"] = shadow_ledger.calculate_policy_gate_receipt_sha256(
+        request["policy_gate_receipt"]
+    )
     request["prior_receipt"] = first
 
     outcome = shadow_scheduler.run_tqqq_shadow_cycle(**request)
