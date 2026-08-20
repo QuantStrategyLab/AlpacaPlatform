@@ -44,6 +44,16 @@ policy-gate receipt、风险摘要、deployment bundle 或前一账本回执缺�
 Alpaca，也不代表 P5 已启用或 P4/P6 已获许可。后续部署会为该纯控制步骤单独接入受限的
 工件读取、create-only 回执写入与状态发布。
 
+现已定义 P5 后置的 `qsl.tqqq_shadow_receipt_admission.v1`：它只能封装 controller 已返回的
+`RECEIPT_READY` 结果和已复核的虚拟账本回执。`CreateOnlyShadowReceiptStore` 是未来受限工件
+存储的最小接口：按 `cycle_id` 原子地 create-if-absent，已存在时读取后按 admission digest 对账；
+digest 不同只返回 `PARKED/receipt_conflict`，绝不覆盖。仓内 `InMemoryShadowReceiptStore` 仅用于
+确定性测试与本地回放，不连接文件系统、GCS、GitHub Actions、券商或任何凭据。
+
+未来每个 P5 周期必须先提供完整 forward observation、独立 policy-gate receipt、风险摘要和
+deployment bundle，且（如果存在）上一账本回执必须有效；任一缺失/无效仍由 controller 返回
+`PARKED`。只有 `RECEIPT_READY` 才可调用该 create-only port；本次没有添加 cron、环境变量或部署。
+
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
