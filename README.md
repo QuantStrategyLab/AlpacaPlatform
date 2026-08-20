@@ -37,6 +37,13 @@ python -m alpaca_platform.shadow_cycle_input \
 输出同样采用 create-only 写入。后续 `shadow_ledger` 仍会重新验证整个 v2 input，而不是信任
 该适配器的成功输出。
 
+`shadow_scheduler` 现提供了一个**未部署、无副作用**的 P5 控制步骤：如果前向观察、独立
+policy-gate receipt、风险摘要、deployment bundle 或前一账本回执缺失/无效，它只会返回
+`qsl.tqqq_shadow_scheduler_result.v1` 的 `PARKED` 原因码；只有它们全部有效时，才返回尚未
+持久化的虚拟账本回执（`RECEIPT_READY`）。它不排程、不抓取任何上游文件、不写存储、不连接
+Alpaca，也不代表 P5 已启用或 P4/P6 已获许可。后续部署会为该纯控制步骤单独接入受限的
+工件读取、create-only 回执写入与状态发布。
+
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
