@@ -1,10 +1,11 @@
 """Create-only, no-broker persistence seam for bounded P5 shadow receipts.
 
 This module runs only after ``shadow_scheduler``.  It wraps an already
-validated ``RECEIPT_READY`` result in a closed admission artifact and exposes a
-small create-only storage port.  The included in-memory implementation is for
-tests/local deterministic replay only: it has no filesystem, network,
-credential, market-data, broker, or scheduler dependency.
+validated ``RECEIPT_READY`` result in a closed admission artifact only after a
+separately produced deterministic risk decision passes its bounded adapter.
+It exposes a small create-only storage port.  The included in-memory
+implementation is for tests/local deterministic replay only: it has no
+filesystem, network, credential, market-data, broker, or scheduler dependency.
 """
 
 from __future__ import annotations
@@ -16,13 +17,20 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from .shadow_ledger import ShadowLedgerError, validate_shadow_ledger_receipt
+from .shadow_risk_gate_decision import (
+    ShadowRiskGateDecisionError,
+    ShadowRiskGateDecisionMismatchError,
+    ShadowRiskGateDecisionProhibitedError,
+    build_p5_risk_gate_decision_reference,
+    validate_p5_risk_gate_decision_reference,
+)
 from .shadow_scheduler import (
     ShadowCycleOutcome,
     ShadowSchedulerError,
     validate_shadow_scheduler_result,
 )
 
-ADMISSION_SCHEMA = "qsl.tqqq_shadow_receipt_admission.v1"
+ADMISSION_SCHEMA = "qsl.tqqq_shadow_receipt_admission.v2"
 PERSISTENCE_RESULT_SCHEMA = "qsl.tqqq_shadow_receipt_persistence_result.v1"
 
 _DIGEST = re.compile(r"^[0-9a-f]{64}$")
@@ -32,6 +40,7 @@ _ADMISSION_FIELDS = {
     "computed_at",
     "scheduler_result",
     "shadow_receipt",
+    "risk_gate_decision",
     "admission_sha256",
 }
 _PERSISTENCE_RESULT_FIELDS = {
@@ -51,6 +60,10 @@ _PARKED_REASONS = {
     "prior_receipt_invalid",
     "cycle_input_invalid",
     "ledger_receipt_invalid",
+    "risk_gate_decision_missing",
+    "risk_gate_decision_invalid",
+    "risk_gate_decision_mismatch",
+    "risk_gate_decision_prohibited",
     "receipt_conflict",
 }
 
@@ -139,12 +152,23 @@ def validate_shadow_receipt_admission(value: Any) -> dict[str, Any]:
         _fail("shadow receipt admission computed_at must match controller result")
     if result["shadow_receipt_sha256"] != receipt["receipt_sha256"]:
         _fail("shadow receipt admission scheduler result must bind ledger receipt digest")
+    try:
+        risk_gate_decision = validate_p5_risk_gate_decision_reference(
+            value["risk_gate_decision"],
+            expected_source_risk_control=receipt["risk_control"],
+            expected_computed_at=result["computed_at"],
+        )
+    except ShadowRiskGateDecisionMismatchError as exc:
+        raise ShadowReceiptStoreError("shadow receipt admission risk-gate decision does not match this P5 receipt") from exc
+    except ShadowRiskGateDecisionError as exc:
+        raise ShadowReceiptStoreError("shadow receipt admission risk-gate decision is invalid") from exc
     normalized = {
         "schema": ADMISSION_SCHEMA,
         "cycle_id": result["cycle_id"],
         "computed_at": result["computed_at"],
         "scheduler_result": result,
         "shadow_receipt": receipt,
+        "risk_gate_decision": risk_gate_decision,
         "admission_sha256": _digest(value["admission_sha256"], "shadow receipt admission.admission_sha256"),
     }
     if normalized["admission_sha256"] != calculate_shadow_receipt_admission_sha256(normalized):
@@ -152,11 +176,16 @@ def validate_shadow_receipt_admission(value: Any) -> dict[str, Any]:
     return normalized
 
 
-def build_shadow_receipt_admission(outcome: ShadowCycleOutcome) -> dict[str, Any]:
+def build_shadow_receipt_admission(
+    outcome: ShadowCycleOutcome,
+    *,
+    risk_gate_decision: Any,
+) -> dict[str, Any]:
     """Convert one controller ``RECEIPT_READY`` outcome into an admission.
 
-    This function cannot create a ledger receipt.  A parked result, a missing
-    receipt, or an inconsistent outcome is rejected before a store is called.
+    This function cannot create a ledger receipt or a risk decision.  A parked
+    result, a missing receipt, a prohibited decision, or an inconsistent
+    binding is rejected before a store is called.
     """
     try:
         result = validate_shadow_scheduler_result(outcome.result)
@@ -166,12 +195,23 @@ def build_shadow_receipt_admission(outcome: ShadowCycleOutcome) -> dict[str, Any
         _fail("only a RECEIPT_READY controller outcome can be admitted")
     if outcome.receipt is None:
         _fail("RECEIPT_READY controller outcome must include a ledger receipt")
+    try:
+        receipt = validate_shadow_ledger_receipt(outcome.receipt)
+    except ShadowLedgerError as exc:
+        raise ShadowReceiptStoreError("RECEIPT_READY controller outcome ledger receipt is invalid") from exc
+    risk_gate_reference = build_p5_risk_gate_decision_reference(
+        risk_gate_decision,
+        expected_cycle_id=result["cycle_id"],
+        expected_computed_at=result["computed_at"],
+        expected_source_risk_control=receipt["risk_control"],
+    )
     admission: dict[str, Any] = {
         "schema": ADMISSION_SCHEMA,
         "cycle_id": result["cycle_id"],
         "computed_at": result["computed_at"],
         "scheduler_result": result,
-        "shadow_receipt": outcome.receipt,
+        "shadow_receipt": receipt,
+        "risk_gate_decision": risk_gate_reference,
         "admission_sha256": "",
     }
     admission["admission_sha256"] = calculate_shadow_receipt_admission_sha256(admission)
@@ -269,11 +309,15 @@ class InMemoryShadowReceiptStore:
 def persist_shadow_cycle_outcome(
     outcome: ShadowCycleOutcome,
     store: CreateOnlyShadowReceiptStore,
+    *,
+    risk_gate_decision: Any | None = None,
 ) -> dict[str, Any]:
     """Persist a ready P5 receipt once, or return a closed parked/reconciled result.
 
-    It never promotes P5, retries missing inputs, or writes a parked result. A
-    conflicting immutable cycle returns ``PARKED`` and remains untouched.
+    It never promotes P5, resets a breaker, retries missing inputs, or writes a
+    parked result.  A missing, prohibited, or mismatched deterministic risk
+    decision returns ``PARKED`` before the store is read or called.  A
+    conflicting immutable cycle also returns ``PARKED`` and remains untouched.
     """
     try:
         controller_result = validate_shadow_scheduler_result(outcome.result)
@@ -291,7 +335,44 @@ def persist_shadow_cycle_outcome(
             admission_sha256=None,
         )
 
-    admission = build_shadow_receipt_admission(outcome)
+    if risk_gate_decision is None:
+        return _persistence_result(
+            cycle_id=controller_result["cycle_id"],
+            computed_at=controller_result["computed_at"],
+            status="PARKED",
+            reason_code="risk_gate_decision_missing",
+            shadow_receipt_sha256=None,
+            admission_sha256=None,
+        )
+    try:
+        admission = build_shadow_receipt_admission(outcome, risk_gate_decision=risk_gate_decision)
+    except ShadowRiskGateDecisionProhibitedError:
+        return _persistence_result(
+            cycle_id=controller_result["cycle_id"],
+            computed_at=controller_result["computed_at"],
+            status="PARKED",
+            reason_code="risk_gate_decision_prohibited",
+            shadow_receipt_sha256=None,
+            admission_sha256=None,
+        )
+    except ShadowRiskGateDecisionMismatchError:
+        return _persistence_result(
+            cycle_id=controller_result["cycle_id"],
+            computed_at=controller_result["computed_at"],
+            status="PARKED",
+            reason_code="risk_gate_decision_mismatch",
+            shadow_receipt_sha256=None,
+            admission_sha256=None,
+        )
+    except ShadowRiskGateDecisionError:
+        return _persistence_result(
+            cycle_id=controller_result["cycle_id"],
+            computed_at=controller_result["computed_at"],
+            status="PARKED",
+            reason_code="risk_gate_decision_invalid",
+            shadow_receipt_sha256=None,
+            admission_sha256=None,
+        )
     cycle_id = admission["cycle_id"]
     existing = store.read(cycle_id)
     created = existing is None and store.create_if_absent(admission)

@@ -44,15 +44,34 @@ policy-gate receipt、风险摘要、deployment bundle 或前一账本回执缺�
 Alpaca，也不代表 P5 已启用或 P4/P6 已获许可。后续部署会为该纯控制步骤单独接入受限的
 工件读取、create-only 回执写入与状态发布。
 
-现已定义 P5 后置的 `qsl.tqqq_shadow_receipt_admission.v1`：它只能封装 controller 已返回的
-`RECEIPT_READY` 结果和已复核的虚拟账本回执。`CreateOnlyShadowReceiptStore` 是未来受限工件
-存储的最小接口：按 `cycle_id` 原子地 create-if-absent，已存在时读取后按 admission digest 对账；
-digest 不同只返回 `PARKED/receipt_conflict`，绝不覆盖。仓内 `InMemoryShadowReceiptStore` 仅用于
-确定性测试与本地回放，不连接文件系统、GCS、GitHub Actions、券商或任何凭据。
+P5 后置 admission 现为 `qsl.tqqq_shadow_receipt_admission.v2`。它除了 controller 已返回的
+`RECEIPT_READY` 结果和已复核的虚拟账本回执，还必须消费一个
+`qsl.tqqq_shadow_risk_gate_decision_envelope.v1`。该 envelope 包含 QSL
+`qsl.deterministic_risk_gate_decision.v1` 的完整、可重算摘要，以及与本 P5 cycle 的
+`cycle_id`、`computed_at` 和 `qsl.forward_observation_risk_control.v1` 三元组绑定。
 
-未来每个 P5 周期必须先提供完整 forward observation、独立 policy-gate receipt、风险摘要和
-deployment bundle，且（如果存在）上一账本回执必须有效；任一缺失/无效仍由 controller 返回
-`PARKED`。只有 `RECEIPT_READY` 才可调用该 create-only port；本次没有添加 cron、环境变量或部署。
+适配器不导入、不复制或重新执行 `QuantRuntimeSettings` 的风险内核；它只严格检查 QSL decision
+的闭合字段、canonical SHA-256、`ALLOW_NEW_RISK`、`CLOSED` breaker 建议、
+`manual_reset_required=true` 及上述 P5 绑定。写入的 v2 admission 只保留脱敏的 source
+risk-control、risk-gate policy id/version/SHA-256 和 decision SHA-256；不会保留账户、价格、
+notional、投影金额或订单材料。
+
+缺少 envelope、结构/摘要无效、cycle/时间/source risk-control 不匹配，或 decision 为
+`NEW_RISK_PROHIBITED` 时，`persist_shadow_cycle_outcome` 都在读取或调用存储前返回 `PARKED`；
+不会自动 reset breaker。`CreateOnlyShadowReceiptStore` 仍是未来受限工件存储的最小接口：按
+`cycle_id` 原子地 create-if-absent，已存在时读取后按 admission digest 对账；digest 不同只返回
+`PARKED/receipt_conflict`，绝不覆盖。仓内 `InMemoryShadowReceiptStore` 仅用于确定性测试与本地
+回放，不连接文件系统、GCS、GitHub Actions、券商或任何凭据。
+
+未来每个 P5 周期必须先提供完整 forward observation、独立 policy-gate receipt、风险摘要、
+deployment bundle 和通过上述 adapter 的 deterministic risk decision，且（如果存在）上一账本回执
+必须有效；任一缺失/无效仍由 controller 或 admission 返回 `PARKED`。只有同时满足
+`RECEIPT_READY` 与风险决定的 create-only port 才可写入；本次没有添加 cron、环境变量或部署。
+
+这仍不是账户级 shadow 启动：真正启用前，独立 gateway 必须从受限、已对账的快照运行 QSL risk
+kernel，生成 per-cycle envelope，并与 policy-gate 身份、工件读取和持久化 adapter 一起部署；AI、
+网页、GitHub Actions、策略代码都不能伪造输入或 reset breaker。此仓没有任何此类身份、账户、
+券商或网络能力。
 
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
