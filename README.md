@@ -73,6 +73,28 @@ kernel，生成 per-cycle envelope，并与 policy-gate 身份、工件读取和
 网页、GitHub Actions、策略代码都不能伪造输入或 reset breaker。此仓没有任何此类身份、账户、
 券商或网络能力。
 
+`p5_default_parked_scheduler` 是下一层仍然**未部署**的单周期编排接口。它只会向注入的
+`RestrictedP5ShadowArtifactReader` 读取一次 `P5ShadowArtifactSnapshot`，其中只能包含前向观察、
+已由独立 P0 gate 产生的 policy receipt、风险摘要、deployment bundle 摘要、上一 P5 receipt 和
+QSL deterministic risk-decision envelope。它不读路径、环境变量、网络、券商、账户或凭据，也不会
+自己设置 cron/Actions/重试循环。
+
+默认行为是 `PARKED`：没有 reader、snapshot、store 或任一上游工件时，返回
+`qsl.tqqq_p5_default_parked_scheduler_status.v1`，其中只含稳定原因码和去重摘要，不写任何 receipt。
+`policy_gate_receipt`、前一 receipt 与 risk envelope 会继续交给既有 controller/admission 严格复核；
+无效、过期、不匹配或 `NEW_RISK_PROHIBITED` 全部保持 `PARKED`。它不签发 P0 policy、不会把自校验
+digest 当授权，也没有 reset breaker 的接口。
+
+只有全部输入有效、风险 envelope 明确 `ALLOW_NEW_RISK`、并且调用方明确注入
+`CreateOnlyShadowReceiptStore` 时，才会调用既有的 create-only admission/store。重复同一不可变 cycle
+只会得到 `RECONCILED`，摘要可用于外层调度器去重；不同 admission 的同 cycle 仍是
+`PARKED/receipt_conflict`。仓内 `InMemoryRestrictedP5ShadowArtifactReader` 和
+`InMemoryShadowReceiptStore` 仅用于测试/本地回放，不是生产工件存储。
+
+真正部署前仍需要在隔离运行面实现受限的只读工件 reader、原子 create-only store、独立 P0/KMS
+policy gate、QSL 风控内核每周期产生的 envelope、可信身份与审计/告警。完成这些外部步骤前，不能
+添加定时调度或把此接口接到任何 paper/live 路径。
+
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
