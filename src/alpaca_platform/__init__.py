@@ -1,5 +1,10 @@
 """Bounded P4/P5 execution gateway primitives."""
 
+from .gcs_p5_artifacts import (
+    GcsCreateOnlyShadowReceiptStore,
+    GcsP5ArtifactError,
+    GcsP5ShadowArtifactReader,
+)
 from .p5_default_parked_scheduler import (
     P5_DEFAULT_PARKED_SCHEDULER_STATUS_SCHEMA,
     P5_DEFAULT_PARKED_SCHEDULER_SUMMARY_SCHEMA,
@@ -69,6 +74,9 @@ __all__ = [
     "POLICY_GATE_RECEIPT_SCHEMA",
     "SCHEDULER_RESULT_SCHEMA",
     "CreateOnlyShadowReceiptStore",
+    "GcsCreateOnlyShadowReceiptStore",
+    "GcsP5ArtifactError",
+    "GcsP5ShadowArtifactReader",
     "InMemoryRestrictedP5ShadowArtifactReader",
     "InMemoryShadowReceiptStore",
     "P5DefaultParkedSchedulerError",

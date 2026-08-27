@@ -64,6 +64,7 @@ _PARKED_REASONS = {
     "risk_gate_decision_invalid",
     "risk_gate_decision_mismatch",
     "risk_gate_decision_prohibited",
+    "receipt_store_unavailable",
     "receipt_conflict",
 }
 
@@ -374,10 +375,19 @@ def persist_shadow_cycle_outcome(
             admission_sha256=None,
         )
     cycle_id = admission["cycle_id"]
-    existing = store.read(cycle_id)
-    created = existing is None and store.create_if_absent(admission)
-
-    stored = store.read(cycle_id)
+    try:
+        existing = store.read(cycle_id)
+        created = existing is None and store.create_if_absent(admission)
+        stored = store.read(cycle_id)
+    except ShadowReceiptStoreError:
+        return _persistence_result(
+            cycle_id=cycle_id,
+            computed_at=admission["computed_at"],
+            status="PARKED",
+            reason_code="receipt_store_unavailable",
+            shadow_receipt_sha256=None,
+            admission_sha256=None,
+        )
     if stored is None:
         _fail("create-only shadow receipt store did not retain or expose the cycle admission")
     stored_admission = validate_shadow_receipt_admission(stored)

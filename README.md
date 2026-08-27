@@ -95,6 +95,14 @@ digest 当授权，也没有 reset breaker 的接口。
 policy gate、QSL 风控内核每周期产生的 envelope、可信身份与审计/告警。完成这些外部步骤前，不能
 添加定时调度或把此接口接到任何 paper/live 路径。
 
+`GcsP5ShadowArtifactReader` 与 `GcsCreateOnlyShadowReceiptStore` 现提供了对应的**受限
+GCS 传输适配器**，但仍未部署或自动实例化。调用方必须显式注入已经绑定 workload
+identity 的 bucket client；适配器不会读取环境变量、服务帐号或 bucket 名称。reader 只读取
+精确的 `p5-inputs/<cycle-id>.json`，不会列出或猜测“最新”工件；store 只对精确的
+`p5-receipts/<cycle-id>.json` 执行带 `if_generation_match=0` 的 create-only 写入，并在
+冲突时重新读取对账。它不删除、不覆盖，也不产生定时任务、网络配置、券商访问或 P4/P6
+权限。存储不可用会闭合为 `PARKED/receipt_store_unavailable`。
+
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
