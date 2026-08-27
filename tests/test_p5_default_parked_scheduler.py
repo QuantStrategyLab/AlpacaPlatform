@@ -21,6 +21,7 @@ from alpaca_platform import (
     validate_p5_default_parked_scheduler_status,
     validate_p5_default_parked_scheduler_summary,
 )
+from alpaca_platform.shadow_receipt_store import ShadowReceiptStoreError
 
 
 def sha(character: str) -> str:
@@ -192,6 +193,14 @@ class SpyStore(InMemoryShadowReceiptStore):
         return super().create_if_absent(admission)
 
 
+class UnavailableStore:
+    def read(self, cycle_id: str):  # type: ignore[no-untyped-def]
+        raise ShadowReceiptStoreError("storage unavailable")
+
+    def create_if_absent(self, admission):  # type: ignore[no-untyped-def]
+        raise ShadowReceiptStoreError("storage unavailable")
+
+
 def test_default_without_reader_is_parked_and_never_touches_store():
     store = SpyStore()
 
@@ -300,6 +309,24 @@ def test_complete_snapshot_records_once_then_reconciles_with_sanitized_dedup_sum
     rendered = json.dumps(first.status, sort_keys=True).lower()
     for forbidden in ("broker", "order", "account", "notional", "price", "credential"):
         assert forbidden not in rendered
+
+
+def test_receipt_store_unavailability_parks_a_ready_snapshot_without_raising():
+    reader = InMemoryRestrictedP5ShadowArtifactReader()
+    snapshot = ready_snapshot()
+    reader.put_snapshot(snapshot)
+
+    outcome = run_p5_default_parked_shadow_cycle(
+        cycle_id=snapshot.cycle_id,
+        computed_at="2026-08-20T20:00:00Z",
+        artifact_reader=reader,
+        receipt_store=UnavailableStore(),
+    )
+
+    assert outcome.status["status"] == "PARKED"
+    assert outcome.status["reason_code"] == "receipt_store_unavailable"
+    assert outcome.status["shadow_receipt_sha256"] is None
+    assert outcome.status["admission_sha256"] is None
 
 
 def test_unavailable_reader_is_parked_without_exposing_adapter_error_or_using_store():

@@ -71,6 +71,7 @@ _PARKED_REASONS = {
     "risk_gate_decision_invalid",
     "risk_gate_decision_mismatch",
     "risk_gate_decision_prohibited",
+    "receipt_store_unavailable",
     "receipt_conflict",
 }
 
