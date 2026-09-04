@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 PAPER_ADMISSION_SCHEMA = "qsl.alpaca_paper_admission.v1"
 PAPER_ENVIRONMENT = "PAPER_DRY_RUN"
@@ -80,7 +81,7 @@ def _timestamp(value: Any, label: str) -> datetime:
     if not isinstance(value, str) or not _TIMESTAMP.fullmatch(value):
         _fail(f"{label} must be an RFC3339 UTC timestamp with whole seconds")
     try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError as exc:
         raise PaperAdmissionError(f"{label} must be a valid calendar timestamp") from exc
 

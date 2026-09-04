@@ -1,15 +1,5 @@
 """Bounded P4/P5 execution gateway primitives."""
 
-from .paper_admission import (
-    PAPER_ADMISSION_SCHEMA,
-    PAPER_ENVIRONMENT,
-    PaperAdmissionConflictError,
-    PaperAdmissionError,
-    build_paper_admission,
-    calculate_paper_admission_sha256,
-    reconcile_paper_admission,
-    validate_paper_admission,
-)
 from .gcs_p5_artifacts import (
     GcsCreateOnlyShadowReceiptStore,
     GcsP5ArtifactError,
@@ -29,6 +19,16 @@ from .p5_default_parked_scheduler import (
     summarize_p5_default_parked_scheduler_status,
     validate_p5_default_parked_scheduler_status,
     validate_p5_default_parked_scheduler_summary,
+)
+from .paper_admission import (
+    PAPER_ADMISSION_SCHEMA,
+    PAPER_ENVIRONMENT,
+    PaperAdmissionConflictError,
+    PaperAdmissionError,
+    build_paper_admission,
+    calculate_paper_admission_sha256,
+    reconcile_paper_admission,
+    validate_paper_admission,
 )
 from .shadow_ledger import (
     FORWARD_OBSERVATION_SCHEMA,
@@ -76,12 +76,12 @@ __all__ = [
     "ADMISSION_SCHEMA",
     "DETERMINISTIC_RISK_GATE_DECISION_SCHEMA",
     "FORWARD_OBSERVATION_SCHEMA",
-    "PAPER_ADMISSION_SCHEMA",
-    "PAPER_ENVIRONMENT",
     "P5_DEFAULT_PARKED_SCHEDULER_STATUS_SCHEMA",
     "P5_DEFAULT_PARKED_SCHEDULER_SUMMARY_SCHEMA",
     "P5_RISK_GATE_DECISION_ENVELOPE_SCHEMA",
     "P5_RISK_GATE_DECISION_REFERENCE_SCHEMA",
+    "PAPER_ADMISSION_SCHEMA",
+    "PAPER_ENVIRONMENT",
     "PERSISTENCE_RESULT_SCHEMA",
     "POLICY_GATE_RECEIPT_SCHEMA",
     "SCHEDULER_RESULT_SCHEMA",
@@ -117,9 +117,9 @@ __all__ = [
     "calculate_policy_gate_receipt_sha256",
     "calculate_shadow_receipt_admission_sha256",
     "persist_shadow_cycle_outcome",
+    "reconcile_paper_admission",
     "run_p5_default_parked_shadow_cycle",
     "run_tqqq_shadow_cycle",
-    "reconcile_paper_admission",
     "summarize_p5_default_parked_scheduler_status",
     "validate_p5_default_parked_scheduler_status",
     "validate_p5_default_parked_scheduler_summary",
