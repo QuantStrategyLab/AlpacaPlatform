@@ -4,7 +4,7 @@ import copy
 
 import pytest
 
-from alpaca_platform import paper_admission
+from alpaca_platform import paper_admission, shadow_ledger
 
 
 def sha(character: str) -> str:
@@ -65,6 +65,23 @@ def test_non_paper_environment_is_rejected(environment: str):
     admission["admission_sha256"] = paper_admission.calculate_paper_admission_sha256(admission)
 
     with pytest.raises(paper_admission.PaperAdmissionError):
+        paper_admission.validate_paper_admission(admission)
+
+
+def test_shadow_ledger_schema_is_not_paper_admission():
+    admission = valid_admission()
+    admission["schema"] = shadow_ledger.RECEIPT_SCHEMA
+    admission["admission_sha256"] = paper_admission.calculate_paper_admission_sha256(admission)
+
+    with pytest.raises(paper_admission.PaperAdmissionError, match="schema is unsupported"):
+        paper_admission.validate_paper_admission(admission)
+
+
+def test_missing_paper_provenance_is_rejected():
+    admission = valid_admission()
+    del admission["environment"]
+
+    with pytest.raises(paper_admission.PaperAdmissionError, match="missing required field"):
         paper_admission.validate_paper_admission(admission)
 
 

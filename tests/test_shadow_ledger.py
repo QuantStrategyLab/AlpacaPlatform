@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from alpaca_platform import shadow_ledger
+from alpaca_platform import paper_admission, shadow_ledger
 
 
 def sha(character: str) -> str:
@@ -132,6 +132,33 @@ def test_genesis_receipt_is_chain_linked_and_contains_only_virtual_weight_change
     rendered = json.dumps(receipt, sort_keys=True)
     for forbidden in ("broker", "order", "account", "notional", "price", "credential"):
         assert forbidden not in rendered.lower()
+
+
+def test_paper_admission_is_not_shadow_input_or_receipt():
+    admission = paper_admission.build_paper_admission(
+        environment="PAPER_DRY_RUN",
+        cycle_id="alpaca_paper_20260904_001",
+        valid_from="2026-09-04T00:00:00Z",
+        valid_until="2026-09-05T00:00:00Z",
+        paper_endpoint_sha256=sha("1"),
+        config_sha256=sha("2"),
+        strategy_sha256=sha("3"),
+        deployment_sha256=sha("4"),
+        risk_sha256=sha("5"),
+    )
+
+    with pytest.raises(shadow_ledger.ShadowLedgerError):
+        shadow_ledger.validate_shadow_cycle_input(admission)
+    with pytest.raises(shadow_ledger.ShadowLedgerError):
+        shadow_ledger.validate_shadow_ledger_receipt(admission)
+
+
+def test_missing_shadow_lane_provenance_is_rejected():
+    payload = cycle_input()
+    del payload["risk_control"]
+
+    with pytest.raises(shadow_ledger.ShadowLedgerError, match="missing required field"):
+        shadow_ledger.validate_shadow_cycle_input(payload)
 
 
 def test_next_session_links_to_previous_virtual_allocation_without_broker_state():
