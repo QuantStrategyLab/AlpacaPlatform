@@ -19,6 +19,17 @@ P5 receipt 不是 P4/P6 权限。shadow input 会复核上游 policy-gate receip
 此前的 v1 仅为未启用的纯账本原型，未签发任何真实 receipt；v2 因此不保留可绕过
 policy-gate receipt 的兼容入口。
 
+## P4 paper admission（本地准入契约）
+
+`paper_admission` 只生成和校验 `qsl.alpaca_paper_admission.v1`，不连接 Alpaca、不读取凭据、
+不访问网络、不排程、不提交订单。契约必须显式使用 `PAPER_DRY_RUN`，并只包含 paper endpoint、
+配置、策略、部署和风险的 SHA-256 摘要，以及不可变 `cycle_id` 和 UTC 有效窗口；不会保存原始
+URL、账户、订单或任何凭据字段。
+
+相同 `cycle_id` 与相同内容可通过 `reconcile_paper_admission` 返回 `RECONCILED`；同一 cycle
+出现不同内容会 fail-closed 为冲突。`LIVE`、`SHADOW`、shadow receipt 提权和未知/敏感字段均被拒绝。
+该契约不代表 paper 账户已连接，也不授予 P4/P6 执行权限。
+
 UESP 只负责产生 `qsl.tqqq-forward-observation.v1`。本仓的适配器再把它与独立的
 policy-gate receipt、风险摘要和 deployment bundle 摘要组成 v2 shadow input；因此研究层
 不需要导入或理解券商、政策签名或运行环境。适配器本身也不会排程或写入账本：
