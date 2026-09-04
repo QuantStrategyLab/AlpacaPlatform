@@ -191,6 +191,18 @@ def test_ready_controller_outcome_becomes_a_closed_sanitized_admission():
         shadow_receipt_store.validate_shadow_receipt_admission(tampered)
 
 
+def test_scheduler_receipt_digest_mismatch_is_rejected_before_admission():
+    outcome = ready_outcome()
+    mismatched = copy.deepcopy(outcome)
+    mismatched.result["shadow_receipt_sha256"] = sha("0")
+
+    with pytest.raises(shadow_receipt_store.ShadowReceiptStoreError, match="bind ledger receipt digest"):
+        shadow_receipt_store.build_shadow_receipt_admission(
+            mismatched,
+            risk_gate_decision=risk_gate_decision_envelope(mismatched),
+        )
+
+
 def test_in_memory_store_is_create_only_and_reconciles_identical_admission():
     store = shadow_receipt_store.InMemoryShadowReceiptStore()
     outcome = ready_outcome()
