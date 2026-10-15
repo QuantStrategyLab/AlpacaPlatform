@@ -1,38 +1,43 @@
 # AlpacaPlatform
 
-QuantStrategyLab 的 Alpaca 执行边界。它分为两个互不混用的阶段：
+English | [简体中文](README.zh-CN.md)
 
-- P5 `SHADOW`：只生成虚拟账本回执，不连接券商、不读取凭据、不提交订单。
-- P4 `PAPER_DRY_RUN`：未来只会使用独立 paper endpoint 与独立 paper 凭据；不能从 P5 或市场数据配置推断资格。
+The Alpaca execution boundary for QuantStrategyLab. It has two phases that are never mixed:
 
-当前实现仅包含 P5 的 `qsl.tqqq_shadow_cycle_input.v2` 和
-`qsl.tqqq_shadow_ledger_receipt.v2`。每个输入固定 deployment bundle、候选、策略 revision、P1/P2/P3
-摘要、风险控制摘要、目标权重（basis points）以及上游
-`qsl.gcp_kms_policy_gate_receipt.v1`；输出记录相对上一回执的**虚拟**权重变化。
-它不保存市场数据、价格、金额、账户、订单、broker URL 或任何凭据。
+- P5 `SHADOW`: produces only virtual ledger receipts, connects to no broker, reads no credentials, and submits no orders.
+- P4 `PAPER_DRY_RUN`: will only ever use a separate paper endpoint and separate paper credentials; eligibility cannot be inferred from P5 or from the market data configuration.
 
-P5 receipt 不是 P4/P6 权限。shadow input 会复核上游 policy-gate receipt 的闭合字段、
-自校验摘要、`SHADOW` stage、有效窗口以及与风险控制的精确绑定；缺一即拒绝。该 receipt
-必须由隔离的 KMS 验签 gate 生成并交付给调度器，本模块不会验签、签发 policy 或把自校验
-摘要误作独立授权。P6 仍由所有者明确决定。
+The current implementation contains only P5's `qsl.tqqq_shadow_cycle_input.v2` and
+`qsl.tqqq_shadow_ledger_receipt.v2`. Each input fixes the deployment bundle, candidate, strategy revision, P1/P2/P3
+digests, risk control digest, target weights (basis points), and the upstream
+`qsl.gcp_kms_policy_gate_receipt.v1`; the output records the **virtual** weight change relative to the previous receipt.
+It stores no market data, prices, amounts, accounts, orders, broker URLs, or any credentials.
 
-此前的 v1 仅为未启用的纯账本原型，未签发任何真实 receipt；v2 因此不保留可绕过
-policy-gate receipt 的兼容入口。
+A P5 receipt is not P4/P6 permission. The shadow input re-checks the upstream policy-gate receipt's closed fields,
+self-check digest, `SHADOW` stage, validity window, and its exact binding to the risk control; if any is missing it
+rejects. That receipt must be produced by an isolated KMS verification gate and delivered to the scheduler; this module
+does not verify signatures, issue policy, or mistake a self-check digest for independent authorization. P6 requires a
+separate maintainer decision.
 
-## P4 paper admission（本地准入契约）
+The earlier v1 was only an unenabled pure-ledger prototype and issued no real receipt; v2 therefore keeps no
+compatibility path that could bypass the policy-gate receipt.
 
-`paper_admission` 只生成和校验 `qsl.alpaca_paper_admission.v1`，不连接 Alpaca、不读取凭据、
-不访问网络、不排程、不提交订单。契约必须显式使用 `PAPER_DRY_RUN`，并只包含 paper endpoint、
-配置、策略、部署和风险的 SHA-256 摘要，以及不可变 `cycle_id` 和 UTC 有效窗口；不会保存原始
-URL、账户、订单或任何凭据字段。
+## P4 paper admission (local admission contract)
 
-相同 `cycle_id` 与相同内容可通过 `reconcile_paper_admission` 返回 `RECONCILED`；同一 cycle
-出现不同内容会 fail-closed 为冲突。`LIVE`、`SHADOW`、shadow receipt 提权和未知/敏感字段均被拒绝。
-该契约不代表 paper 账户已连接，也不授予 P4/P6 执行权限。
+`paper_admission` only builds and validates `qsl.alpaca_paper_admission.v1`; it does not connect to Alpaca, read
+credentials, access the network, schedule, or submit orders. The contract must explicitly use `PAPER_DRY_RUN`, and
+contains only SHA-256 digests of the paper endpoint, configuration, strategy, deployment, and risk, plus an immutable
+`cycle_id` and a UTC validity window; it stores no raw URL, account, order, or credential fields.
 
-UESP 只负责产生 `qsl.tqqq-forward-observation.v1`。本仓的适配器再把它与独立的
-policy-gate receipt、风险摘要和 deployment bundle 摘要组成 v2 shadow input；因此研究层
-不需要导入或理解券商、政策签名或运行环境。适配器本身也不会排程或写入账本：
+The same `cycle_id` with the same content can return `RECONCILED` through `reconcile_paper_admission`; the same cycle
+with different content fails closed as a conflict. `LIVE`, `SHADOW`, shadow-receipt escalation, and unknown/sensitive
+fields are all rejected. This contract does not mean a paper account is connected, and it grants no P4/P6 execution
+permission.
+
+UESP is only responsible for producing `qsl.tqqq-forward-observation.v1`. The adapter in this repo then combines it
+with an independent policy-gate receipt, the risk digest, and the deployment bundle digest into the v2 shadow input;
+the research layer therefore does not need to import or understand the broker, policy signing, or the runtime
+environment. The adapter itself also does not schedule or write to the ledger:
 
 ```bash
 python -m alpaca_platform.shadow_cycle_input \
@@ -45,82 +50,85 @@ python -m alpaca_platform.shadow_cycle_input \
   --output cycle-input.json
 ```
 
-输出同样采用 create-only 写入。后续 `shadow_ledger` 仍会重新验证整个 v2 input，而不是信任
-该适配器的成功输出。
+The output is likewise written create-only. The later `shadow_ledger` still re-validates the entire v2 input instead of
+trusting the adapter's successful output.
 
-`shadow_scheduler` 现提供了一个**未部署、无副作用**的 P5 控制步骤：如果前向观察、独立
-policy-gate receipt、风险摘要、deployment bundle 或前一账本回执缺失/无效，它只会返回
-`qsl.tqqq_shadow_scheduler_result.v1` 的 `PARKED` 原因码；只有它们全部有效时，才返回尚未
-持久化的虚拟账本回执（`RECEIPT_READY`）。它不排程、不抓取任何上游文件、不写存储、不连接
-Alpaca，也不代表 P5 已启用或 P4/P6 已获许可。后续部署会为该纯控制步骤单独接入受限的
-工件读取、create-only 回执写入与状态发布。
+`shadow_scheduler` now provides an **undeployed, side-effect-free** P5 control step: if the forward observation, the
+independent policy-gate receipt, the risk digest, the deployment bundle, or the previous ledger receipt is missing or
+invalid, it only returns the `PARKED` reason code of `qsl.tqqq_shadow_scheduler_result.v1`; only when they are all valid
+does it return the not-yet-persisted virtual ledger receipt (`RECEIPT_READY`). It does not schedule, fetch any upstream
+file, write storage, or connect to Alpaca, and it does not mean P5 is enabled or that P4/P6 is permitted. A later
+deployment will, for this pure control step alone, wire in restricted artifact reads, create-only receipt writes, and
+status publication.
 
-P5 后置 admission 现为 `qsl.tqqq_shadow_receipt_admission.v2`。它除了 controller 已返回的
-`RECEIPT_READY` 结果和已复核的虚拟账本回执，还必须消费一个
-`qsl.tqqq_shadow_risk_gate_decision_envelope.v1`。该 envelope 包含 QSL
-`qsl.deterministic_risk_gate_decision.v1` 的完整、可重算摘要，以及与本 P5 cycle 的
-`cycle_id`、`computed_at` 和 `qsl.forward_observation_risk_control.v1` 三元组绑定。
+P5 post-admission is now `qsl.tqqq_shadow_receipt_admission.v2`. Besides the `RECEIPT_READY` result already returned by
+the controller and the re-checked virtual ledger receipt, it must also consume a
+`qsl.tqqq_shadow_risk_gate_decision_envelope.v1`. That envelope contains the complete, recomputable digest of the QSL
+`qsl.deterministic_risk_gate_decision.v1`, bound to this P5 cycle's `cycle_id`, `computed_at`, and the
+`qsl.forward_observation_risk_control.v1` triple.
 
-适配器不导入、不复制或重新执行 `QuantRuntimeSettings` 的风险内核；它只严格检查 QSL decision
-的闭合字段、canonical SHA-256、`ALLOW_NEW_RISK`、`CLOSED` breaker 建议、
-`manual_reset_required=true` 及上述 P5 绑定。写入的 v2 admission 只保留脱敏的 source
-risk-control、risk-gate policy id/version/SHA-256 和 decision SHA-256；不会保留账户、价格、
-notional、投影金额或订单材料。
+The adapter does not import, copy, or re-execute the risk kernel of `QuantRuntimeSettings`; it only strictly checks the
+QSL decision's closed fields, canonical SHA-256, `ALLOW_NEW_RISK`, `CLOSED` breaker recommendation,
+`manual_reset_required=true`, and the P5 binding above. The written v2 admission keeps only the sanitized source
+risk-control, the risk-gate policy id/version/SHA-256, and the decision SHA-256; it keeps no account, price, notional,
+projected amount, or order material.
 
-缺少 envelope、结构/摘要无效、cycle/时间/source risk-control 不匹配，或 decision 为
-`NEW_RISK_PROHIBITED` 时，`persist_shadow_cycle_outcome` 都在读取或调用存储前返回 `PARKED`；
-不会自动 reset breaker。`CreateOnlyShadowReceiptStore` 仍是未来受限工件存储的最小接口：按
-`cycle_id` 原子地 create-if-absent，已存在时读取后按 admission digest 对账；digest 不同只返回
-`PARKED/receipt_conflict`，绝不覆盖。仓内 `InMemoryShadowReceiptStore` 仅用于确定性测试与本地
-回放，不连接文件系统、GCS、GitHub Actions、券商或任何凭据。
+When the envelope is missing, the structure/digest is invalid, the cycle/time/source risk-control does not match, or the
+decision is `NEW_RISK_PROHIBITED`, `persist_shadow_cycle_outcome` returns `PARKED` before reading or calling storage; it
+does not automatically reset the breaker. `CreateOnlyShadowReceiptStore` remains the minimal interface for the future
+restricted artifact storage: atomically create-if-absent by `cycle_id`, read and reconcile by admission digest when it
+already exists; a different digest only returns `PARKED/receipt_conflict` and never overwrites. The in-repo
+`InMemoryShadowReceiptStore` is only for deterministic tests and local replay; it connects to no filesystem, GCS, GitHub
+Actions, broker, or any credential.
 
-未来每个 P5 周期必须先提供完整 forward observation、独立 policy-gate receipt、风险摘要、
-deployment bundle 和通过上述 adapter 的 deterministic risk decision，且（如果存在）上一账本回执
-必须有效；任一缺失/无效仍由 controller 或 admission 返回 `PARKED`。只有同时满足
-`RECEIPT_READY` 与风险决定的 create-only port 才可写入；本次没有添加 cron、环境变量或部署。
+Each future P5 cycle must first provide a complete forward observation, an independent policy-gate receipt, the risk
+digest, the deployment bundle, and a deterministic risk decision through the adapter above, and (if present) the previous
+ledger receipt must be valid; if any is missing or invalid, the controller or admission still returns `PARKED`. Only the
+create-only port that satisfies both `RECEIPT_READY` and the risk decision may write; this repository adds no cron job,
+environment variable, or deployment.
 
-这仍不是账户级 shadow 启动：真正启用前，独立 gateway 必须从受限、已对账的快照运行 QSL risk
-kernel，生成 per-cycle envelope，并与 policy-gate 身份、工件读取和持久化 adapter 一起部署；AI、
-网页、GitHub Actions、策略代码都不能伪造输入或 reset breaker。此仓没有任何此类身份、账户、
-券商或网络能力。
+This is still not account-level shadow startup: before it can truly be enabled, an independent gateway must run the QSL
+risk kernel from a restricted, reconciled snapshot, produce a per-cycle envelope, and be deployed together with the
+policy-gate identity, artifact reads, and the persistence adapter; AI, web, GitHub Actions, and strategy code must not be
+able to forge inputs or reset the breaker. This repo has no such identity, account, broker, or network capability.
 
-`p5_default_parked_scheduler` 是下一层仍然**未部署**的单周期编排接口。它只会向注入的
-`RestrictedP5ShadowArtifactReader` 读取一次 `P5ShadowArtifactSnapshot`，其中只能包含前向观察、
-已由独立 P0 gate 产生的 policy receipt、风险摘要、deployment bundle 摘要、上一 P5 receipt 和
-QSL deterministic risk-decision envelope。它不读路径、环境变量、网络、券商、账户或凭据，也不会
-自己设置 cron/Actions/重试循环。
+`p5_default_parked_scheduler` is the next layer, still **undeployed**: a single-cycle orchestration interface. It reads a
+`P5ShadowArtifactSnapshot` once from an injected `RestrictedP5ShadowArtifactReader`, which may contain only the forward
+observation, the policy receipt already produced by the independent P0 gate, the risk digest, the deployment bundle
+digest, the previous P5 receipt, and the QSL deterministic risk-decision envelope. It does not read paths, environment
+variables, the network, broker, account, or credentials, and it does not set up cron/Actions/retry loops itself.
 
-默认行为是 `PARKED`：没有 reader、snapshot、store 或任一上游工件时，返回
-`qsl.tqqq_p5_default_parked_scheduler_status.v1`，其中只含稳定原因码和去重摘要，不写任何 receipt。
-`policy_gate_receipt`、前一 receipt 与 risk envelope 会继续交给既有 controller/admission 严格复核；
-无效、过期、不匹配或 `NEW_RISK_PROHIBITED` 全部保持 `PARKED`。它不签发 P0 policy、不会把自校验
-digest 当授权，也没有 reset breaker 的接口。
+The default behavior is `PARKED`: with no reader, snapshot, store, or any upstream artifact, it returns
+`qsl.tqqq_p5_default_parked_scheduler_status.v1`, which contains only a stable reason code and a deduplication digest and
+writes no receipt. `policy_gate_receipt`, the previous receipt, and the risk envelope are still passed to the existing
+controller/admission for strict re-checking; invalid, expired, mismatched, or `NEW_RISK_PROHIBITED` all stay `PARKED`. It
+does not issue P0 policy, does not treat a self-check digest as authorization, and has no interface to reset the breaker.
 
-只有全部输入有效、风险 envelope 明确 `ALLOW_NEW_RISK`、并且调用方明确注入
-`CreateOnlyShadowReceiptStore` 时，才会调用既有的 create-only admission/store。重复同一不可变 cycle
-只会得到 `RECONCILED`，摘要可用于外层调度器去重；不同 admission 的同 cycle 仍是
-`PARKED/receipt_conflict`。仓内 `InMemoryRestrictedP5ShadowArtifactReader` 和
-`InMemoryShadowReceiptStore` 仅用于测试/本地回放，不是生产工件存储。
+Only when all inputs are valid, the risk envelope is explicitly `ALLOW_NEW_RISK`, and the caller explicitly injects
+`CreateOnlyShadowReceiptStore` does it call the existing create-only admission/store. Repeating the same immutable cycle
+only yields `RECONCILED`, and the digest can be used by an outer scheduler for deduplication; a different admission for
+the same cycle is still `PARKED/receipt_conflict`. The in-repo `InMemoryRestrictedP5ShadowArtifactReader` and
+`InMemoryShadowReceiptStore` are only for tests/local replay, not production artifact storage.
 
-真正部署前仍需要在隔离运行面实现受限的只读工件 reader、原子 create-only store、独立 P0/KMS
-policy gate、QSL 风控内核每周期产生的 envelope、可信身份与审计/告警。完成这些外部步骤前，不能
-添加定时调度或把此接口接到任何 paper/live 路径。
+Before real deployment, an isolated runtime still needs a restricted read-only artifact reader, an atomic create-only
+store, an independent P0/KMS policy gate, the per-cycle envelope produced by the QSL risk kernel, and trusted identity
+with audit/alerting. Until these external steps are done, no timed scheduling can be added and this interface cannot be
+connected to any paper/live path.
 
-`GcsP5ShadowArtifactReader` 与 `GcsCreateOnlyShadowReceiptStore` 现提供了对应的**受限
-GCS 传输适配器**，但仍未部署或自动实例化。调用方必须显式注入已经绑定 workload
-identity 的 bucket client；适配器不会读取环境变量、服务帐号或 bucket 名称。reader 只读取
-精确的 `p5-inputs/<cycle-id>.json`，不会列出或猜测“最新”工件；store 只对精确的
-`p5-receipts/<cycle-id>.json` 执行带 `if_generation_match=0` 的 create-only 写入，并在
-冲突时重新读取对账。它不删除、不覆盖，也不产生定时任务、网络配置、券商访问或 P4/P6
-权限。存储不可用会闭合为 `PARKED/receipt_store_unavailable`。
+`GcsP5ShadowArtifactReader` and `GcsCreateOnlyShadowReceiptStore` now provide the corresponding **restricted GCS
+transport adapters**, but they are still not deployed or auto-instantiated. The caller must explicitly inject a bucket
+client already bound to a workload identity; the adapters do not read environment variables, service accounts, or bucket
+names. The reader reads only the exact `p5-inputs/<cycle-id>.json` and does not list or guess the "latest" artifact; the
+store performs a create-only write with `if_generation_match=0` only for the exact `p5-receipts/<cycle-id>.json`, and
+re-reads to reconcile on conflict. It does not delete, overwrite, or produce cron jobs, network configuration, broker
+access, or P4/P6 permission. Storage unavailability closes to `PARKED/receipt_store_unavailable`.
 
 ```bash
 python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```
 
-输出采用 create-only 写入，避免无意覆盖已有 receipt。运行测试：
+The output is written create-only to avoid accidentally overwriting an existing receipt. Run the tests:
 
 ```bash
 python -m pytest -q
 ```
-Bounded Alpaca paper and shadow execution gateway for QuantStrategyLab
