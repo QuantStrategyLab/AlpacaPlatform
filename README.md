@@ -132,3 +132,7 @@ The output is written create-only to avoid accidentally overwriting an existing 
 ```bash
 python -m pytest -q
 ```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). AI assistants and maintainers follow [AGENTS.md](AGENTS.md).

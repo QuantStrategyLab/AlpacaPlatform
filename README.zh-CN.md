@@ -125,3 +125,7 @@ python -m alpaca_platform.shadow_ledger --input cycle.json --output receipt.json
 ```bash
 python -m pytest -q
 ```
+
+## 参与贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。AI 助手与维护者遵循 [AGENTS.md](AGENTS.md)。
