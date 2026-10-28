@@ -35,6 +35,8 @@ pytest -q
 A P5 receipt is not P4 or P6 permission; the receipt checks are the safety
 property, not an obstacle to remove.
 
+Organization documentation rules are checked by `python scripts/check_style.py`, which also runs in CI as the `Documentation check` job.
+
 ## Naming and documentation
 
 - Developer documentation is English by default; Chinese siblings use
