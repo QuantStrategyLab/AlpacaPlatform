@@ -66,6 +66,8 @@ Organization documentation rules are checked by `python scripts/check_style.py`,
 
 ## Do not
 
+- Only the owner, or a reviewer explicitly authorized by the owner, may apply the `owner-approved` label; coding agents must never apply it to their own PRs.
+
 - Do not add broker connectivity, order submission, credential reads or market
   data storage to the P5 path.
 - Do not treat a shadow receipt, a green CI run or market data credentials as
