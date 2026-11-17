@@ -2,10 +2,16 @@
 
 English | [简体中文](README.zh-CN.md)
 
-The Alpaca execution boundary for QuantStrategyLab. It has two phases that are never mixed:
+## Status
 
-- P5 `SHADOW`: produces only virtual ledger receipts, connects to no broker, reads no credentials, and submits no orders.
-- P4 `PAPER_DRY_RUN`: will only ever use a separate paper endpoint and separate paper credentials; eligibility cannot be inferred from P5 or from the market data configuration.
+Experimental. Use at your own risk. This project is not financial advice and does not guarantee any trading result. Live trading can lose money; you are responsible for your own configuration and orders.
+
+## What this is
+
+The Alpaca execution boundary for QuantStrategyLab. It separates two non-live stages that are never mixed:
+
+- `SHADOW`: produces only virtual ledger receipts, connects to no broker, reads no credentials, and submits no orders.
+- `PAPER_DRY_RUN`: uses a separate paper endpoint and separate paper credentials; eligibility cannot be inferred from shadow receipts or market data configuration.
 
 The current implementation contains only P5's `qsl.tqqq_shadow_cycle_input.v2` and
 `qsl.tqqq_shadow_ledger_receipt.v2`. Each input fixes the deployment bundle, candidate, strategy revision, P1/P2/P3
@@ -22,7 +28,7 @@ separate maintainer decision.
 The earlier v1 was only an unenabled pure-ledger prototype and issued no real receipt; v2 therefore keeps no
 compatibility path that could bypass the policy-gate receipt.
 
-## P4 paper admission (local admission contract)
+## Paper admission (local admission contract)
 
 `paper_admission` only builds and validates `qsl.alpaca_paper_admission.v1`; it does not connect to Alpaca, read
 credentials, access the network, schedule, or submit orders. The contract must explicitly use `PAPER_DRY_RUN`, and
