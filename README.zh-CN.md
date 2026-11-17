@@ -2,10 +2,16 @@
 
 [English](README.md) | 简体中文
 
-QuantStrategyLab 的 Alpaca 执行边界。它分为两个互不混用的阶段：
+## 状态
 
-- P5 `SHADOW`：只生成虚拟账本回执，不连接券商、不读取凭据、不提交订单。
-- P4 `PAPER_DRY_RUN`：未来只会使用独立 paper endpoint 与独立 paper 凭据；不能从 P5 或市场数据配置推断资格。
+实验性项目，使用风险自负。本项目不构成投资建议，也不保证任何交易结果。实盘交易可能亏损资金；你需自行对配置和下单负责。
+
+## 简介
+
+QuantStrategyLab 的 Alpaca 执行边界。它分为两个互不混用的非实盘阶段：
+
+- `SHADOW`：只生成虚拟账本回执，不连接券商、不读取凭据、不提交订单。
+- `PAPER_DRY_RUN`：使用独立 paper endpoint 与独立 paper 凭据；不能从 shadow 回执或市场数据配置推断资格。
 
 当前实现仅包含 P5 的 `qsl.tqqq_shadow_cycle_input.v2` 和
 `qsl.tqqq_shadow_ledger_receipt.v2`。每个输入固定 deployment bundle、候选、策略 revision、P1/P2/P3
@@ -21,7 +27,7 @@ P5 receipt 不是 P4/P6 权限。shadow input 会复核上游 policy-gate receip
 此前的 v1 仅为未启用的纯账本原型，未签发任何真实 receipt；v2 因此不保留可绕过
 policy-gate receipt 的兼容入口。
 
-## P4 paper admission（本地准入契约）
+## Paper admission（本地准入契约）
 
 `paper_admission` 只生成和校验 `qsl.alpaca_paper_admission.v1`，不连接 Alpaca、不读取凭据、
 不访问网络、不排程、不提交订单。契约必须显式使用 `PAPER_DRY_RUN`，并只包含 paper endpoint、
