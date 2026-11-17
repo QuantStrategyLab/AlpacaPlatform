@@ -4,8 +4,10 @@ updates:
   directory: /
   schedule:
     interval: weekly
+  commit-message:
+    prefix: "chore"
   groups:
-    actions-minor-and-patch:
+    actions:
       patterns:
         - "*"
   open-pull-requests-limit: 3
@@ -13,4 +15,6 @@ updates:
   directory: /
   schedule:
     interval: weekly
+  commit-message:
+    prefix: "chore"
   open-pull-requests-limit: 5
