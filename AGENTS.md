@@ -33,7 +33,7 @@ pytest -q
 A P5 receipt is not P4 or P6 permission; the receipt checks are the safety
 property, not an obstacle to remove.
 
-Organization documentation rules are checked by `python scripts/check_style.py --phase 2` (`Documentation check` in CI).
+Organization documentation rules run in CI via `QuantStrategyLab/.github/.github/workflows/docs-acceptance.yml` (`Documentation check`), or offline from a sibling `.github` checkout with `python3 ../.github/scripts/check_style.py --root . --phase 2`.
 
 ## Naming and documentation
 
